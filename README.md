@@ -43,10 +43,11 @@ curl --output-dir $HOME/Documents/Adobe/Premiere\ Pro/ -O "https://raw.githubuse
 2. Install useful packages (test, combine arguments in single line and add these if necessary: --accept-package-agreements --accept-source-agreements):
 ```
 winget install AutoHotkey.AutoHotkey
-winget install astral-sh.uv MediaArea.MediaInfo MediaArea.MediaInfo.GUI OliverBetz.ExifTool
-winget install ffmpeg AtomicParsley.AtomicParsley Bento4.Bento4 ImageMagick.ImageMagick Google.Chrome VideoLAN.VLC ZhornSoftware.Caffeine Audacity.Audacity
+winget install astral-sh.uv MediaArea.MediaInfo MediaArea.MediaInfo.GUI OliverBetz.ExifTool Gyan.FFmpeg
+winget install AtomicParsley.AtomicParsley Bento4.Bento4 ImageMagick.ImageMagick Google.Chrome VideoLAN.VLC ZhornSoftware.Caffeine Audacity.Audacity
 ```
 3. Download and install my AHK shortcuts:
-```$path="$HOME\Downloads\MacKeyboard_LM.ahk"; curl.exe -o $path "https://raw.githubusercontent.com/lucuma13/prem/refs/heads/main/MacKeyboard_LM"; Start-Process "AutoHotkey.exe" -ArgumentList $p -Verb RunAs
+```
+$path="$HOME\Downloads\MacKeyboard_LM.ahk"; curl.exe -o $path "https://raw.githubusercontent.com/lucuma13/prem/refs/heads/main/MacKeyboard_LM"; Start-Process "AutoHotkey.exe" -ArgumentList $p -Verb RunAs
 ```
 
