@@ -1,4 +1,4 @@
-## Set up Mac worksation
+## 🍏 Set up Mac worksation
 
 1. Download my Premiere Pro shortcuts:
 ```
@@ -33,7 +33,7 @@ sudo installer -pkg /Volumes/ProVideoFormats/ProVideoFormats.pkg -target /
 ```
 hdiutil detach /Volumes/ProVideoFormats && rm ~/Downloads/ProVideoFormats.dmg
 ```
-## Set up Windows worksation
+## 🪟 Set up Windows worksation
 
 1. Download my Premiere Pro shortcuts:
 ```
