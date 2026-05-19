@@ -7,7 +7,7 @@ curl --output-dir $HOME/Documents/Adobe/Premiere\ Pro/ -O "https://raw.githubuse
 
 2. Change default shell to bash:
 ```
-chsh -sh /bin/bash
+chsh -s /bin/bash && echo "export BASH_SILENCE_DEPRECATION_WARNING=1" >> ~/.bash_profile
 ```
 
 3. Install Homebrew:
