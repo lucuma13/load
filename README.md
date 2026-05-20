@@ -2,12 +2,12 @@
 
 * Mac:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/lucuma13/prem/refs/heads/main/setup-mac.sh  | bash
+curl -fsSL https://raw.githubusercontent.com/lucuma13/load/main/src/load-mac.sh | bash
 ```
 
 * Windows:
 ```powershell
-`Invoke-WebRequest -Uri "https://raw.githubusercontent.com/lucuma13/prem/refs/heads/main/setup-win.ps1" -UseBasicParsing | Invoke-Expression`
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/lucuma13/load/main/src/load-win.ps1" -UseBasicParsing | Invoke-Expression
 ```
 
 ## 🍏 Manual Set up Mac worksation

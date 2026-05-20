@@ -1,5 +1,5 @@
 # Windows workstation setup script
-# Usage: Invoke-WebRequest -Uri "https://raw.githubusercontent.com/lucuma13/yourrepo/main/setup.ps1" -UseBasicParsing | Invoke-Expression
+# Usage: Invoke-WebRequest -Uri "https://raw.githubusercontent.com/lucuma13/load/main/src/load-win.ps1" -UseBasicParsing | Invoke-Expression
 
 $ErrorActionPreference = "Stop"
 
@@ -25,15 +25,21 @@ Write-Host "Already-completed steps will be skipped."
 
 # ── 1 · Premiere Pro shortcuts ────────────────────────────────────────────────
 
-if (-not (Test-Path $premiereBase)) {
-  Write-Host "⚠️  Premiere Pro directory not found — skipping shortcuts."
+if (Is-Done "premiere") {
+  Write-Host "✅  Premiere shortcuts already installed — skipping."
 } else {
-  # always overwrite, no is_done check
-  foreach ($dir in Get-ChildItem $premiereBase -Directory) {
-    if (Test-Path "$($dir.FullName)\Profile-*\Win") {
-      curl.exe --output-dir "$($dir.FullName)" -O "..."
+  Header "1 · Premiere Pro shortcuts"
+  $premiereBase = "$HOME\Documents\Adobe\Premiere Pro"
+  if (Test-Path $premiereBase) {
+    foreach ($dir in Get-ChildItem $premiereBase -Directory) {
+      if (Test-Path "$($dir.FullName)\Profile-*\Win") {
+        curl.exe --output-dir "$($dir.FullName)" -O "https://raw.githubusercontent.com/lucuma13/load/main/src/data/Luis_Mengo_25.1_WINDOWS.kys"
+      }
     }
+  } else {
+    Write-Host "⚠️  Premiere Pro directory not found — skipping shortcuts."
   }
+  Mark-Done "premiere"
 }
 
 # ── 2 · winget packages ───────────────────────────────────────────────────────
@@ -71,7 +77,7 @@ if (Is-Done "ahk") {
 } else {
   Header "3 · AutoHotkey shortcuts"
   $ahkPath = "$HOME\Downloads\MacKeyboard_LM.ahk"
-  curl.exe -o $ahkPath "https://raw.githubusercontent.com/lucuma13/prem/refs/heads/main/MacKeyboard_LM"
+  curl.exe -o $ahkPath "https://raw.githubusercontent.com/lucuma13/load/main/src/data/MacKeyboard_LM.ahk"
   Start-Process "AutoHotkey.exe" -ArgumentList $ahkPath -Verb RunAs
   Mark-Done "ahk"
 }
