@@ -1,8 +1,14 @@
 ## 🚗 Auto Set Up Workstation
 
-* mac: `curl -fsSL https://raw.githubusercontent.com/lucuma13/yourrepo/main/setup.sh | bash`
-* windows: `Invoke-WebRequest -Uri "https://raw.githubusercontent.com/lucuma13/yourrepo/main/setup.ps1" -UseBasicParsing | Invoke-Expression`
+* Mac:
+```bash
+curl -fsSL https://raw.githubusercontent.com/lucuma13/prem/setup.sh | bash`
+```
 
+* Windows:
+```powershell
+`Invoke-WebRequest -Uri "https://raw.githubusercontent.com/lucuma13/prem/setup.ps1" -UseBasicParsing | Invoke-Expression`
+```
 
 ## 🍏 Manual Set up Mac worksation
 
