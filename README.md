@@ -1,4 +1,10 @@
-## 🍏 Set up Mac worksation
+## 🚗 Auto Set Up Workstation
+
+* mac: `curl -fsSL https://raw.githubusercontent.com/lucuma13/yourrepo/main/setup.sh | bash`
+* windows: `Invoke-WebRequest -Uri "https://raw.githubusercontent.com/lucuma13/yourrepo/main/setup.ps1" -UseBasicParsing | Invoke-Expression`
+
+
+## 🍏 Manual Set up Mac worksation
 
 1. Download my Premiere Pro shortcuts:
 ```
@@ -8,8 +14,6 @@ for dir in "$HOME/Documents/Adobe/Premiere Pro"/*/; do
   fi
 done
 ```
-
-
 
 2. Set preferences:
 ```
@@ -99,21 +103,18 @@ uv tool install triplecheck
 
 6. Download and install Pro Video Formats:
 ```
-if system_profiler SPInstallHistoryDataType 2>/dev/null | grep -q "Pro Video Formats"; then
-    echo "Pro Video Formats is already installed."
-else
-    echo "Pro Video Formats not found. Downloading..."
-    cd ~/Downloads && curl -O "https://updates.cdn-apple.com/2026/macos/072-84099-20260127-5022F0FE-82CF-44E9-B96D-430E73501EBA/ProVideoFormats.dmg"
-    
-    hdiutil attach ~/Downloads/ProVideoFormats.dmg -nobrowse -quiet
-    sudo installer -pkg "/Volumes/ProVideoFormats/ProVideoFormats.pkg" -target /
-    hdiutil detach "/Volumes/ProVideoFormats" -quiet
-    rm ~/Downloads/ProVideoFormats.dmg
+cd ~/Downloads
 
-    echo "Installation complete."
+if [ ! -f ProVideoFormats.dmg ]; then
+  curl -O "https://updates.cdn-apple.com/2026/macos/072-84099-20260127-5022F0FE-82CF-44E9-B96D-430E73501EBA/ProVideoFormats.dmg"
 fi
+
+hdiutil attach ~/Downloads/ProVideoFormats.dmg -nobrowse
+sudo installer -pkg "/Volumes/Pro Video Formats/ProVideoFormats.pkg" -target /
+hdiutil detach "/Volumes/Pro Video Formats" -quiet
+rm ~/Downloads/ProVideoFormats.dmg
 ```
-## 🪟 Set up Windows worksation
+## 🪟 Manual Set up Windows worksation
 
 1. Download my Premiere Pro shortcuts:
 ```
