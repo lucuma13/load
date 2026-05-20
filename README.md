@@ -8,38 +8,16 @@ curl --output-dir $HOME/Documents/Adobe/Premiere\ Pro/ -O "https://raw.githubuse
 2. Set preferences:
 ```
 # ----------------------------------------------------------
-# Keyboard/Trackpad preferences
+# macOS
 # ----------------------------------------------------------
 
+# Keyboard/Trackpad preferences
 defaults write NSGlobalDomain KeyRepeat -int 2
 defaults write NSGlobalDomain InitialKeyRepeat -int 15
 defaults write NSGlobalDomain com.apple.trackpad.scaling -float 2
 
-# ----------------------------------------------------------
-# TextEdit preferences
-# ----------------------------------------------------------
-
-# New document "Plain text"
-defaults write com.apple.TextEdit RichText -int 0 # Plain Text
-
-# Turn off "Correct spelling automatically" OFF"
-defaults write com.apple.TextEdit CorrectSpellingAutomatically -bool false 
-
-# Turn off "Smart dashes"
-defaults write com.apple.TextEdit SmartDashes -bool false
-defaults write NSGlobalDomain NSAutomaticDashSubstitutionEnabled -bool false
-
-# Turn off "Text replacement"
-defaults write com.apple.TextEdit TextReplacement -bool false
-defaults write NSGlobalDomain NSAutomaticTextCompletionEnabled -bool false
-
-# Turn off show ruler
-defaults write com.apple.TextEdit ShowRuler -bool false
-
-# Clear preference cache and restart text subsystems to force application
-killall cfprefsd
-killall AppleSpell
-killall TextEdit 2>/dev/null || true
+# Set the battery percentage to show in the menu bar
+defaults write com.apple.controlcenter BatteryShowPercentage -bool true
 
 # ----------------------------------------------------------
 # Finder preferences
@@ -68,6 +46,32 @@ def f(o):
 f(p)
 plistlib.dump(p,open(path,'wb'))
 " && sleep 1 && open -a Finder
+
+# ----------------------------------------------------------
+# TextEdit preferences
+# ----------------------------------------------------------
+
+# New document "Plain text"
+defaults write com.apple.TextEdit RichText -int 0 # Plain Text
+
+# Turn off "Correct spelling automatically" OFF"
+defaults write com.apple.TextEdit CorrectSpellingAutomatically -bool false 
+
+# Turn off "Smart dashes"
+defaults write com.apple.TextEdit SmartDashes -bool false
+defaults write NSGlobalDomain NSAutomaticDashSubstitutionEnabled -bool false
+
+# Turn off "Text replacement"
+defaults write com.apple.TextEdit TextReplacement -bool false
+defaults write NSGlobalDomain NSAutomaticTextCompletionEnabled -bool false
+
+# Turn off show ruler
+defaults write com.apple.TextEdit ShowRuler -bool false
+
+# Clear preference cache and restart text subsystems to force application
+killall cfprefsd
+killall AppleSpell
+killall TextEdit 2>/dev/null || true
 ```
 
 3. Change default shell to bash, then restart Terminal:
