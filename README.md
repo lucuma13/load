@@ -6,7 +6,7 @@ curl --output-dir $HOME/Documents/Adobe/Premiere\ Pro/ -O "https://raw.githubuse
 ```
 
 2. Set preferences:
-```sh
+```
 # ----------------------------------------------------------
 # Keyboard/Trackpad preferences
 # ----------------------------------------------------------
@@ -71,24 +71,24 @@ plistlib.dump(p,open(path,'wb'))
 ```
 
 3. Change default shell to bash, then restart Terminal:
-```sh
+```
 chsh -s /bin/bash && echo "export BASH_SILENCE_DEPRECATION_WARNING=1" >> ~/.bash_profile
 ```
 
 4. Install Homebrew:
-```bash
+```
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 ```
 
 5. Install useful formulas and casks:
-```bash
+```
 brew install git media-info exiftool ffmpeg atomicparsley bento4 wget uv
 brew install --cask google-chrome vlc caffeine audacity mediainfo mediahuman-audio-converter appcleaner
 uv tool install triplecheck
 ```
 
 6. Download and install Pro Video Formats:
-```bash
+```
 if [ -d "/Library/Video/Professional Video Workflow Plug-Ins" ]; then
     echo "Pro Video Formats is already installed."
 else
