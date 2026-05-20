@@ -93,7 +93,7 @@ uv tool install triplecheck
 
 6. Download and install Pro Video Formats:
 ```
-if [ -d "/Library/Video/Professional Video Workflow Plug-Ins" ]; then
+if system_profiler SPInstallHistoryDataType 2>/dev/null | grep -q "Pro Video Formats"; then
     echo "Pro Video Formats is already installed."
 else
     echo "Pro Video Formats not found. Downloading..."
