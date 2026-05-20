@@ -1,6 +1,6 @@
 #!/bin/bash
 # Mac workstation setup script
-# Usage: curl -fsSL https://raw.githubusercontent.com/lucuma13/yourrepo/main/setup.sh | bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/lucuma13/load/main/setup-mac.sh | bash
 
 set -euo pipefail
 
@@ -12,9 +12,7 @@ is_done()   { [ -f "$PROGRESS_DIR/$1" ]; }
 
 header() {
   echo ""
-  echo "──────────────────────────────────────────────────────────"
-  echo "  $1"
-  echo "──────────────────────────────────────────────────────────"
+  echo "  · $1"
 }
 
 brew_prefix() {
@@ -25,12 +23,16 @@ brew_prefix() {
   fi
 }
 
-# ── 1 · Change default shell to bash ──────────────────────────────────────────
+# Cache sudo credentials once, silently, and keep them alive
+sudo -v
+while true; do sudo -n true; sleep 60; kill -0 "$$" || exit; done 2>/dev/null &
+
+# ── Change default shell to bash ───────────────────────────────────────────────
 
 if is_done "chsh"; then
-  echo "✅  Shell already set to bash — skipping."
+  echo "  ✅ shell"
 else
-  header "1 · Change default shell to bash"
+  header "shell → bash"
   chsh -s /bin/bash
   echo 'export BASH_SILENCE_DEPRECATION_WARNING=1' >> "$HOME/.bash_profile"
   mark_done "chsh"
@@ -41,27 +43,25 @@ if [ -z "${BASH_VERSION:-}" ]; then
   exec /bin/bash "$0" "$@"
 fi
 
-# ── 2 · Premiere Pro shortcuts ────────────────────────────────────────────────
+# ── Premiere Pro shortcuts ─────────────────────────────────────────────────────
 
 if ! ls "$HOME/Documents/Adobe/Premiere Pro"/*/Profile-*/Win &>/dev/null 2>&1; then
-  echo "⚠️  Premiere Pro directory not found — skipping shortcuts."
-  mark_done "premiere"
+  echo "  ⚠️  Premiere Pro not found — skipping shortcuts."
 else
-  header "2 · Premiere Pro shortcuts"
+  header "Premiere Pro shortcuts"
   for dir in "$HOME/Documents/Adobe/Premiere Pro"/*/; do
     if ls "$dir"Profile-*/Win &>/dev/null 2>&1; then
-      curl --output-dir "$dir" -O "https://raw.githubusercontent.com/lucuma13/prem/refs/heads/main/Luis_Mengo_25.1.kys"
+      (cd "$dir" && curl -fsSL -O "https://raw.githubusercontent.com/lucuma13/load/main/Luis_Mengo_25.1.kys")
     fi
   done
-  mark_done "premiere"
 fi
 
-# ── 3 · Keyboard / Trackpad / Battery preferences ─────────────────────────────
+# ── Keyboard / Trackpad / Battery preferences ──────────────────────────────────
 
 if is_done "system_prefs"; then
-  echo "✅  Keyboard/Trackpad/Battery prefs already set — skipping."
+  echo "  ✅ system prefs"
 else
-  header "3 · Keyboard / Trackpad / Battery preferences"
+  header "keyboard / trackpad / battery"
   defaults write NSGlobalDomain KeyRepeat -int 2
   defaults write NSGlobalDomain InitialKeyRepeat -int 15
   defaults write NSGlobalDomain com.apple.trackpad.scaling -float 2
@@ -69,12 +69,12 @@ else
   mark_done "system_prefs"
 fi
 
-# ── 4 · Finder preferences ────────────────────────────────────────────────────
+# ── Finder preferences ─────────────────────────────────────────────────────────
 
 if is_done "finder"; then
-  echo "✅  Finder prefs already set — skipping."
+  echo "  ✅ finder"
 else
-  header "4 · Finder preferences"
+  header "finder"
   defaults write com.apple.finder ShowPathbar -bool true
   defaults write com.apple.finder ShowStatusBar -bool true
 
@@ -103,12 +103,12 @@ plistlib.dump(p,open(path,'wb'))
   mark_done "finder"
 fi
 
-# ── 5 · TextEdit preferences ──────────────────────────────────────────────────
+# ── TextEdit preferences ───────────────────────────────────────────────────────
 
 if is_done "textedit"; then
-  echo "✅  TextEdit prefs already set — skipping."
+  echo "  ✅ textedit"
 else
-  header "5 · TextEdit preferences"
+  header "textedit"
   defaults write com.apple.TextEdit RichText -int 0
   defaults write com.apple.TextEdit CorrectSpellingAutomatically -bool false
   defaults write com.apple.TextEdit SmartDashes -bool false
@@ -122,12 +122,12 @@ else
   mark_done "textedit"
 fi
 
-# ── 6 · Install Homebrew ──────────────────────────────────────────────────────
+# ── Install Homebrew ───────────────────────────────────────────────────────────
 
 if is_done "homebrew"; then
-  echo "✅  Homebrew already installed — skipping."
+  echo "  ✅ homebrew"
 else
-  header "6 · Install Homebrew"
+  header "homebrew"
   echo | /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
   PREFIX="$(brew_prefix)"
@@ -142,24 +142,24 @@ fi
 PREFIX="$(brew_prefix)"
 eval "$("${PREFIX}/bin/brew" shellenv bash)" 2>/dev/null || true
 
-# ── 7 · Brew formulas, casks & uv tools ──────────────────────────────────────
+# ── Brew formulas, casks & uv tools ───────────────────────────────────────────
 
 if is_done "brew_packages"; then
-  echo "✅  Brew packages already installed — skipping."
+  echo "  ✅ brew packages"
 else
-  header "7 · Brew formulas, casks & uv tools"
+  header "brew"
   brew install git media-info exiftool ffmpeg atomicparsley bento4 wget uv
   brew install --cask google-chrome vlc caffeine audacity mediainfo mediahuman-audio-converter appcleaner
   uv tool install triplecheck
   mark_done "brew_packages"
 fi
 
-# ── 8 · Pro Video Formats ─────────────────────────────────────────────────────
+# ── Pro Video Formats ──────────────────────────────────────────────────────────
 
 if is_done "pro_video_formats"; then
-  echo "✅  Pro Video Formats already installed — skipping."
+  echo "  ✅ pro video formats"
 else
-  header "8 · Pro Video Formats"
+  header "pro video formats"
   DMG_URL="https://updates.cdn-apple.com/2026/macos/072-84099-20260127-5022F0FE-82CF-44E9-B96D-430E73501EBA/ProVideoFormats.dmg"
   DMG_PATH="$HOME/Downloads/ProVideoFormats.dmg"
 
@@ -174,19 +174,12 @@ else
   mark_done "pro_video_formats"
 fi
 
-# ── 9 · Done ──────────────────────────────────────────────────────────────────
+# ── Done ───────────────────────────────────────────────────────────────────────
 
 echo ""
-echo "╔══════════════════════════════════════╗"
-echo "║           Setup complete! ✅          ║"
-echo "╚══════════════════════════════════════╝"
+echo "  done ✅"
 echo ""
-echo "⚠️  Log out and back in for these to take effect:"
-echo "    · Key repeat / trackpad speed"
-echo "    · Battery percentage in menu bar"
+echo "  ⚠️  log out and back in for keyboard / trackpad / battery prefs to take effect"
 echo ""
-echo "    Apple menu → Log Out → log back in."
-echo ""
-echo "🗑️  Remove progress files when you're happy:"
-echo "    rm -rf ~/.mac_setup"
+echo "  🗑️  rm -rf ~/.mac_setup"
 echo ""
