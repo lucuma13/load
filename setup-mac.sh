@@ -29,13 +29,12 @@ while true; do sudo -n true; sleep 60; kill -0 "$$" || exit; done 2>/dev/null &
 
 # ── Change default shell to bash ───────────────────────────────────────────────
 
-if is_done "chsh"; then
+if [ "$SHELL" = "/bin/bash" ]; then
   echo "  ✅ shell"
 else
   header "shell → bash"
   chsh -s /bin/bash
   echo 'export BASH_SILENCE_DEPRECATION_WARNING=1' >> "$HOME/.bash_profile"
-  mark_done "chsh"
 fi
 
 # Ensure we're running in bash regardless
@@ -149,7 +148,7 @@ if is_done "brew_packages"; then
 else
   header "brew"
   brew install git media-info exiftool ffmpeg atomicparsley bento4 wget uv
-  brew install --cask google-chrome vlc caffeine audacity mediainfo mediahuman-audio-converter appcleaner
+  brew install --cask --adopt google-chrome vlc caffeine audacity mediainfo mediahuman-audio-converter appcleaner
   uv tool install triplecheck
   mark_done "brew_packages"
 fi
