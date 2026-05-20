@@ -2,8 +2,14 @@
 
 1. Download my Premiere Pro shortcuts:
 ```
-curl --output-dir $HOME/Documents/Adobe/Premiere\ Pro/ -O "https://raw.githubusercontent.com/lucuma13/prem/refs/heads/main/Luis_Mengo_25.1.kys"
+for dir in "$HOME/Documents/Adobe/Premiere Pro"/*/; do
+  if ls "$dir"Profile-*/Win &>/dev/null 2>&1; then
+    curl --output-dir "$dir" -O "https://raw.githubusercontent.com/lucuma13/prem/refs/heads/main/Luis_Mengo_25.1.kys"
+  fi
+done
 ```
+
+
 
 2. Set preferences:
 ```
@@ -111,7 +117,11 @@ fi
 
 1. Download my Premiere Pro shortcuts:
 ```
-curl --output-dir $HOME/Documents/Adobe/Premiere\ Pro/ -O "https://raw.githubusercontent.com/lucuma13/prem/refs/heads/main/Luis_Mengo_25.1_WINDOWS.kys"
+foreach ($dir in Get-ChildItem "$HOME\Documents\Adobe\Premiere Pro" -Directory) {
+  if (Test-Path "$($dir.FullName)\Profile-*\Win") {
+    curl --output-dir "$($dir.FullName)" -O "https://raw.githubusercontent.com/lucuma13/prem/refs/heads/main/Luis_Mengo_25.1_WINDOWS.kys"
+  }
+}
 ```
 
 2. Install useful packages (test, combine arguments in single line and add these if necessary: --accept-package-agreements --accept-source-agreements):
