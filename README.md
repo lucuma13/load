@@ -5,17 +5,52 @@
 curl --output-dir $HOME/Documents/Adobe/Premiere\ Pro/ -O "https://raw.githubusercontent.com/lucuma13/prem/refs/heads/main/Luis_Mengo_25.1.kys"
 ```
 
-2. Modify Keyboard/Trackpad preferences, then log out and back in:
+2. Set preferences:
+```sh
+# ----------------------------------------------------------
+# Keyboard/Trackpad preferences
+# ----------------------------------------------------------
 
-```zsh
 defaults write NSGlobalDomain KeyRepeat -int 2
 defaults write NSGlobalDomain InitialKeyRepeat -int 15
 defaults write NSGlobalDomain com.apple.trackpad.scaling -float 2
-```
 
-3. Modify "Calculate all sizes" on Finder view options:
+# ----------------------------------------------------------
+# TextEdit preferences
+# ----------------------------------------------------------
 
-```zsh
+# New document "Plain text"
+defaults write com.apple.TextEdit RichText -int 0 # Plain Text
+
+# Turn off "Correct spelling automatically" OFF"
+defaults write com.apple.TextEdit CorrectSpellingAutomatically -bool false 
+
+# Turn off "Smart dashes"
+defaults write com.apple.TextEdit SmartDashes -bool false
+defaults write NSGlobalDomain NSAutomaticDashSubstitutionEnabled -bool false
+
+# Turn off "Text replacement"
+defaults write com.apple.TextEdit TextReplacement -bool false
+defaults write NSGlobalDomain NSAutomaticTextCompletionEnabled -bool false
+
+# Turn off show ruler
+defaults write com.apple.TextEdit ShowRuler -bool false
+
+# Clear preference cache and restart text subsystems to force application
+killall cfprefsd
+killall AppleSpell
+killall TextEdit 2>/dev/null || true
+
+# ----------------------------------------------------------
+# Finder preferences
+# ----------------------------------------------------------
+
+# Enable path bar and status bar
+defaults write com.apple.finder ShowPathbar -bool true
+defaults write com.apple.finder ShowStatusBar -bool true
+killall Finder
+
+# Modify "Calculate all sizes" on Finder view options (it does not work perfectly)
 osascript -e 'tell application "Finder" to quit' && sleep 2 && plutil -convert xml1 ~/Library/Preferences/com.apple.finder.plist && python3 -c "
 import plistlib, os
 path = os.path.expanduser('~/Library/Preferences/com.apple.finder.plist')
@@ -36,7 +71,7 @@ plistlib.dump(p,open(path,'wb'))
 ```
 
 3. Change default shell to bash, then restart Terminal:
-```zsh
+```sh
 chsh -s /bin/bash && echo "export BASH_SILENCE_DEPRECATION_WARNING=1" >> ~/.bash_profile
 ```
 
@@ -47,22 +82,26 @@ chsh -s /bin/bash && echo "export BASH_SILENCE_DEPRECATION_WARNING=1" >> ~/.bash
 
 5. Install useful formulas and casks:
 ```bash
-brew tap lucuma13/dit
-brew install git media-info exiftool ffmpeg atomicparsley bento4 imagemagick wget uv
+brew install git media-info exiftool ffmpeg atomicparsley bento4 wget uv
 brew install --cask google-chrome vlc caffeine audacity mediainfo mediahuman-audio-converter appcleaner
 uv tool install triplecheck
 ```
 
 6. Download and install Pro Video Formats:
 ```bash
-cd ~/Downloads && curl -O "https://updates.cdn-apple.com/2026/macos/072-84099-20260127-5022F0FE-82CF-44E9-B96D-430E73501EBA/ProVideoFormats.dmg"
-```
-```bash
-hdiutil attach ~/Downloads/ProVideoFormats.dmg
-sudo installer -pkg /Volumes/ProVideoFormats/ProVideoFormats.pkg -target /
-```
-```bash
-hdiutil detach /Volumes/ProVideoFormats && rm ~/Downloads/ProVideoFormats.dmg
+if [ -d "/Library/Video/Professional Video Workflow Plug-Ins" ]; then
+    echo "Pro Video Formats is already installed."
+else
+    echo "Pro Video Formats not found. Downloading..."
+    cd ~/Downloads && curl -O "https://updates.cdn-apple.com/2026/macos/072-84099-20260127-5022F0FE-82CF-44E9-B96D-430E73501EBA/ProVideoFormats.dmg"
+    
+    hdiutil attach ~/Downloads/ProVideoFormats.dmg -nobrowse -quiet
+    sudo installer -pkg "/Volumes/ProVideoFormats/ProVideoFormats.pkg" -target /
+    hdiutil detach "/Volumes/ProVideoFormats" -quiet
+    rm ~/Downloads/ProVideoFormats.dmg
+
+    echo "Installation complete."
+fi
 ```
 ## 🪟 Set up Windows worksation
 
