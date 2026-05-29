@@ -1,14 +1,27 @@
 ## 🚗 Auto Set Up Workstation
 
-* Mac:
+* macOS
+Fast set-up:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/lucuma13/load/main/src/load-mac.sh | bash
+curl -fsSL https://raw.githubusercontent.com/lucuma13/load/main/src/load-mac.sh | bash -s -- --fast
+```
+
+Full set-up:
+```bash
+curl -fsSL https://raw.githubusercontent.com/lucuma13/load/main/src/load-mac.sh | bash -s -- --full
 ```
 
 * Windows:
+Fast set-up:
 ```powershell
-Invoke-WebRequest -Uri "https://raw.githubusercontent.com/lucuma13/load/main/src/load-win.ps1" -UseBasicParsing | Invoke-Expression
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/lucuma13/load/main/src/load-win.ps1" -UseBasicParsing -OutFile "$env:TEMP\load-win.ps1"; & "$env:TEMP\load-win.ps1" --fast
 ```
+
+Full set-up:
+```powershell
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/lucuma13/load/main/src/load-win.ps1" -UseBasicParsing -OutFile "$env:TEMP\load-win.ps1"; & "$env:TEMP\load-win.ps1" --full
+```
+
 
 ## 🍏 Manual Set up Mac worksation
 
