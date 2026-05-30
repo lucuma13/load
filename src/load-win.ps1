@@ -107,6 +107,9 @@ if (-not $PKGS_DONE_OK -and -not $FAST) {
     foreach ($pkg in $CORE_PKGS) {
         winget install $pkg --accept-package-agreements --accept-source-agreements
     }
+    # Refresh PATH so newly installed tools (uv, etc.) are available in this session
+    $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
+                [System.Environment]::GetEnvironmentVariable("Path", "User")
     foreach ($pkg in $CORE_UV) {
         uv tool install $pkg
     }
