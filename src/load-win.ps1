@@ -3,8 +3,6 @@
 # Flags: --full  --fast  --dry-run
 
 $ErrorActionPreference = "Stop"
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$OutputEncoding = [System.Text.Encoding]::UTF8
 
 $ProgressDir = "$HOME\.win_setup"
 New-Item -ItemType Directory -Force -Path $ProgressDir | Out-Null
@@ -36,9 +34,9 @@ function uv_installed($pkg) {
     return (uv tool list 2>$null) -match "^$pkg"
 }
 
-function Would-Run  { param($msg); Write-Host "  🚀  $msg" }
-function Would-Skip { param($msg); Write-Host "  ⏭️  $msg" }
-function Already-Done { param($msg); Write-Host "  ✅  $msg" }
+function Would-Run  { param($msg); Write-Host "  [run]   $msg" }
+function Would-Skip { param($msg); Write-Host "  [skip]  $msg" }
+function Already-Done { param($msg); Write-Host "  [done]  $msg" }
 
 Write-Host ""
 
@@ -145,5 +143,5 @@ if (-not $AHK_OK) {
 # ── Done ──────────────────────────────────────────────────────────────────────
 
 Write-Host ""
-Write-Host "  done ✅"
+Write-Host "  done."
 Write-Host ""
