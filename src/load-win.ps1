@@ -3,6 +3,8 @@
 # Flags: --full  --fast  --dry-run
 
 $ErrorActionPreference = "Stop"
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
 
 $ProgressDir = "$HOME\.win_setup"
 New-Item -ItemType Directory -Force -Path $ProgressDir | Out-Null
@@ -96,7 +98,7 @@ if ($DRY_RUN) { exit 0 }
 if ($PREMIERE_OK) {
     foreach ($dir in Get-ChildItem "$HOME\Documents\Adobe\Premiere Pro" -Directory) {
         if (Test-Path "$($dir.FullName)\Profile-*\Win") {
-            curl.exe --output-dir "$($dir.FullName)" -O "https://raw.githubusercontent.com/lucuma13/load/refs/heads/main/src/data/Luis_Mengo_25.1_WINDOWS.kys"
+            curl.exe -s --output-dir "$($dir.FullName)" -O "https://raw.githubusercontent.com/lucuma13/load/refs/heads/main/src/data/Luis_Mengo_25.1_WINDOWS.kys"
         }
     }
 }
@@ -134,7 +136,7 @@ if (-not $AHK_OK) {
         Write-Host "  ⚠️  AutoHotkey not found — skipping AHK shortcuts"
     } else {
         $ahkPath = "$HOME\Downloads\MacKeyboard_LM.ahk"
-        curl.exe -o $ahkPath "https://raw.githubusercontent.com/lucuma13/load/refs/heads/main/src/data/MacKeyboard_LM.ahk"
+        curl.exe -s -o $ahkPath "https://raw.githubusercontent.com/lucuma13/load/refs/heads/main/src/data/MacKeyboard_LM.ahk"
         Start-Process $ahkExe -ArgumentList $ahkPath -Verb RunAs
         Mark-Done "ahk"
     }
