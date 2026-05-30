@@ -96,7 +96,7 @@ if ($DRY_RUN) { exit 0 }
 if ($PREMIERE_OK) {
     foreach ($dir in Get-ChildItem "$HOME\Documents\Adobe\Premiere Pro" -Directory) {
         if (Test-Path "$($dir.FullName)\Profile-*\Win") {
-            curl.exe --output-dir "$($dir.FullName)" -O "https://raw.githubusercontent.com/lucuma13/load/main/src/data/Luis_Mengo_25.1_WINDOWS.kys"
+            curl.exe --output-dir "$($dir.FullName)" -O "https://raw.githubusercontent.com/lucuma13/load/refs/heads/main/src/data/Luis_Mengo_25.1_WINDOWS.kys"
         }
     }
 }
@@ -124,7 +124,7 @@ if ($FULL -and -not (Is-Done "winget_packages_full") -and -not $FAST) {
 
 if (-not $AHK_OK) {
     $ahkPath = "$HOME\Downloads\MacKeyboard_LM.ahk"
-    curl.exe -o $ahkPath "https://raw.githubusercontent.com/lucuma13/load/main/src/data/MacKeyboard_LM.ahk"
+    curl.exe -o $ahkPath "https://raw.githubusercontent.com/lucuma13/load/refs/heads/main/src/data/MacKeyboard_LM.ahk"
     Start-Process "AutoHotkey.exe" -ArgumentList $ahkPath -Verb RunAs
     Mark-Done "ahk"
 }

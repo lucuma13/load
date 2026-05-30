@@ -94,7 +94,7 @@ rm ~/Downloads/ProVideoFormats.dmg
 ```
 foreach ($dir in Get-ChildItem "$HOME\Documents\Adobe\Premiere Pro" -Directory) {
   if (Test-Path "$($dir.FullName)\Profile-*\Win") {
-    curl --output-dir "$($dir.FullName)" -O "https://raw.githubusercontent.com/lucuma13/prem/refs/heads/main/Luis_Mengo_25.1_WINDOWS.kys"
+    curl --output-dir "$($dir.FullName)" -O "https://raw.githubusercontent.com/lucuma13/load/refs/heads/main/src/data/Luis_Mengo_25.1_WINDOWS.kys"
   }
 }
 ```
@@ -107,6 +107,6 @@ winget install AtomicParsley.AtomicParsley Bento4.Bento4 ImageMagick.ImageMagick
 ```
 3. Download and install my AHK shortcuts:
 ```
-$path="$HOME\Downloads\MacKeyboard_LM.ahk"; curl.exe -o $path "https://raw.githubusercontent.com/lucuma13/prem/refs/heads/main/MacKeyboard_LM"; Start-Process "AutoHotkey.exe" -ArgumentList $p -Verb RunAs
+$path="$HOME\Downloads\MacKeyboard_LM.ahk"; curl.exe -o $path "https://raw.githubusercontent.com/lucuma13/load/refs/heads/main/src/data/MacKeyboard_LM.ahk"; Start-Process "AutoHotkey.exe" -ArgumentList $p -Verb RunAs
 ```
 
