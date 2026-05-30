@@ -123,10 +123,22 @@ if ($FULL -and -not (Is-Done "winget_packages_full") -and -not $FAST) {
 # ── AHK shortcuts ─────────────────────────────────────────────────────────────
 
 if (-not $AHK_OK) {
-    $ahkPath = "$HOME\Downloads\MacKeyboard_LM.ahk"
-    curl.exe -o $ahkPath "https://raw.githubusercontent.com/lucuma13/load/refs/heads/main/src/data/MacKeyboard_LM.ahk"
-    Start-Process "AutoHotkey.exe" -ArgumentList $ahkPath -Verb RunAs
-    Mark-Done "ahk"
+    $ahkExe = Get-Command AutoHotkey.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
+    if (-not $ahkExe) {
+        $ahkExe = @(
+            "$env:ProgramFiles\AutoHotkey\v2\AutoHotkey64.exe",
+            "$env:ProgramFiles\AutoHotkey\v2\AutoHotkey32.exe",
+            "$env:ProgramFiles\AutoHotkey\AutoHotkey.exe"
+        ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+    }
+    if (-not $ahkExe) {
+        Write-Host "  ⚠️  AutoHotkey not found — skipping AHK shortcuts"
+    } else {
+        $ahkPath = "$HOME\Downloads\MacKeyboard_LM.ahk"
+        curl.exe -o $ahkPath "https://raw.githubusercontent.com/lucuma13/load/refs/heads/main/src/data/MacKeyboard_LM.ahk"
+        Start-Process $ahkExe -ArgumentList $ahkPath -Verb RunAs
+        Mark-Done "ahk"
+    }
 }
 
 # ── Done ──────────────────────────────────────────────────────────────────────

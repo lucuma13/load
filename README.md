@@ -14,12 +14,12 @@ curl -fsSL https://raw.githubusercontent.com/lucuma13/load/main/src/load-mac.sh 
 * Windows:
 Fast set-up:
 ```powershell
-Invoke-WebRequest -Uri "https://raw.githubusercontent.com/lucuma13/load/main/src/load-win.ps1" -UseBasicParsing -OutFile "$env:TEMP\load-win.ps1"; & "$env:TEMP\load-win.ps1" --fast
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/lucuma13/load/main/src/load-win.ps1" -UseBasicParsing | Set-Content "$env:TEMP\load-win.ps1" -Encoding UTF8; powershell -ExecutionPolicy Bypass -File "$env:TEMP\load-win.ps1" --fast
 ```
 
 Full set-up:
 ```powershell
-Invoke-WebRequest -Uri "https://raw.githubusercontent.com/lucuma13/load/main/src/load-win.ps1" -UseBasicParsing -OutFile "$env:TEMP\load-win.ps1"; & "$env:TEMP\load-win.ps1" --full
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/lucuma13/load/main/src/load-win.ps1" -UseBasicParsing | Set-Content "$env:TEMP\load-win.ps1" -Encoding UTF8; powershell -ExecutionPolicy Bypass -File "$env:TEMP\load-win.ps1" --full
 ```
 
 
