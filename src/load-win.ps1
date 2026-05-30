@@ -127,8 +127,7 @@ if (-not $AHK_OK) {
     if (-not $ahkExe) {
         $ahkExe = @(
             "$env:ProgramFiles\AutoHotkey\v2\AutoHotkey64.exe",
-            "$env:ProgramFiles\AutoHotkey\v2\AutoHotkey32.exe",
-            "$env:ProgramFiles\AutoHotkey\AutoHotkey.exe"
+            "$env:ProgramFiles\AutoHotkey\v2\AutoHotkey32.exe"
         ) | Where-Object { Test-Path $_ } | Select-Object -First 1
     }
     if (-not $ahkExe) {
