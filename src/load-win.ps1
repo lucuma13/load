@@ -113,6 +113,10 @@ if (-not $PKGS_DONE_OK -and -not $FAST) {
     foreach ($pkg in $CORE_UV) {
         uv tool install $pkg
     }
+    # Add uv's tool bin dir to PATH permanently and refresh for this session
+    uv tool update-shell
+    $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
+                [System.Environment]::GetEnvironmentVariable("Path", "User")
     Mark-Done "winget_packages"
 }
 
@@ -146,5 +150,5 @@ if (-not $AHK_OK) {
 # ── Done ──────────────────────────────────────────────────────────────────────
 
 Write-Host ""
-Write-Host "  done."
+Write-Host "  You're ready to roll!"
 Write-Host ""
