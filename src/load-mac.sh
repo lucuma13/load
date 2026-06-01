@@ -20,7 +20,9 @@ brew_prefix() {
   fi
 }
 
-# ── Preflight ──────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
+# Preflight
+# -----------------------------------------------------------------------------
 
 FULL=false
 FAST=false
@@ -127,7 +129,9 @@ $DRY_RUN && exit 0
 sudo -v
 while true; do sudo -n true; sleep 60; kill -0 "$$" || exit; done 2>/dev/null &
 
-# ── Premiere Pro shortcuts ─────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
+# Premiere Pro shortcuts
+# -----------------------------------------------------------------------------
 
 if $PREMIERE_OK; then
   for dir in "$HOME/Documents/Adobe/Premiere Pro"/*/; do
@@ -137,7 +141,9 @@ if $PREMIERE_OK; then
   done
 fi
 
-# ── System preferences ───–––––––––––––––––––––––───────────────────────────────
+# -----------------------------------------------------------------------------
+# System preferences
+# -----------------------------------------------------------------------------
 
 defaults write NSGlobalDomain KeyRepeat -int 2
 defaults write NSGlobalDomain InitialKeyRepeat -int 15
@@ -152,7 +158,9 @@ defaults write com.apple.dock mru-spaces -bool false
 defaults write com.apple.dock show-recents -bool false
 killall Dock
 
-# ── Finder preferences ─────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
+# System preferences
+# -----------------------------------------------------------------------------
 
 defaults write com.apple.finder ShowPathbar -bool true
 defaults write com.apple.finder ShowStatusBar -bool true
@@ -183,7 +191,9 @@ plistlib.dump(p,open(path,'wb'))
 sleep 1
 open -a Finder
 
-# ── TextEdit preferences ───────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
+# TextEdit preferences
+# -----------------------------------------------------------------------------
 
 defaults write com.apple.TextEdit RichText -int 0
 defaults write com.apple.TextEdit CorrectSpellingAutomatically -bool false
@@ -196,7 +206,9 @@ killall cfprefsd
 killall AppleSpell 2>/dev/null || true
 killall TextEdit 2>/dev/null || true
 
-# ── Install Homebrew ───────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
+# Homebrew & Managed Packages
+# -----------------------------------------------------------------------------
 
 if ! $BREW_OK && ! $FAST; then
   echo | /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
@@ -212,7 +224,6 @@ fi
 PREFIX="$(brew_prefix)"
 eval "$("${PREFIX}/bin/brew" shellenv)" 2>/dev/null || true
 
-# ── Managed packages ──────────────────────────────────────────────────────────
 
 if ! $BREW_PKGS_OK && ! $FAST; then
   brew install --adopt media-info exiftool ffmpeg uv
@@ -227,7 +238,9 @@ if $FULL && ! $BREW_FULL_OK && ! $FAST; then
   mark_done "brew_packages_full"
 fi
 
-# ── Pro Video Formats ──────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
+# Pro Video Formats
+# -----------------------------------------------------------------------------
 
 if ! $PVF_OK && ! $FAST; then
   DMG_URL="https://updates.cdn-apple.com/2026/macos/072-84099-20260127-5022F0FE-82CF-44E9-B96D-430E73501EBA/ProVideoFormats.dmg"
@@ -243,10 +256,13 @@ if ! $PVF_OK && ! $FAST; then
   rm "$DMG_PATH"
 fi
 
-# ── Done ───────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
+# Summary
+# -----------------------------------------------------------------------------
+
 
 echo ""
-echo "  done ✅"
+echo "  You're ready to roll! 🛼"
 echo ""
-echo "  ⚠️  please restart the computer for system prefs to take effect"
+echo "  ⚠️  Please restart the computer for system prefs to take effect"
 echo ""

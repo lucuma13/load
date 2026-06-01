@@ -10,13 +10,17 @@ New-Item -ItemType Directory -Force -Path $ProgressDir | Out-Null
 function Mark-Done { param($step); New-Item -ItemType File -Force -Path "$ProgressDir\$step" | Out-Null }
 function Is-Done   { param($step); Test-Path "$ProgressDir\$step" }
 
-# ── Flags ─────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
+# Flags
+# -----------------------------------------------------------------------------
 
 $FULL    = $args -contains "--full"
 $FAST    = $args -contains "--fast"
 $DRY_RUN = $args -contains "--dry-run"
 
-# ── Preflight ─────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
+# Preflight
+# -----------------------------------------------------------------------------
 
 $PREMIERE_OK = Test-Path "$HOME\Documents\Adobe\Premiere Pro"
 $WINGET_OK   = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
@@ -99,7 +103,9 @@ else         { Would-Run    "AHK shortcuts" }
 Write-Host ""
 if ($DRY_RUN) { exit 0 }
 
-# ── Premiere Pro shortcuts ────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
+# Premiere Pro shortcuts
+# -----------------------------------------------------------------------------
 
 if ($PREMIERE_OK) {
     foreach ($dir in Get-ChildItem "$HOME\Documents\Adobe\Premiere Pro" -Directory) {
@@ -109,14 +115,18 @@ if ($PREMIERE_OK) {
     }
 }
 
-# ── Keyboard preferences ─────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
+# Keyboard preferences
+# -----------------------------------------------------------------------------
 
 if (-not $KB_OK) {
     Set-ItemProperty -Path "HKCU:\Control Panel\Keyboard" -Name "KeyboardSpeed" -Value 31
     Set-ItemProperty -Path "HKCU:\Control Panel\Keyboard" -Name "KeyboardDelay" -Value 0
 }
 
-# ── Managed packages ──────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
+# Managed packages
+# -----------------------------------------------------------------------------
 
 if (-not $PKGS_DONE_OK -and -not $FAST) {
     foreach ($pkg in $CORE_PKGS) {
@@ -142,7 +152,9 @@ if ($FULL -and -not (Is-Done "winget_packages_full") -and -not $FAST) {
     Mark-Done "winget_packages_full"
 }
 
-# ── AHK shortcuts ─────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
+# AHK macros
+# -----------------------------------------------------------------------------
 
 if (-not $AHK_OK) {
     $ahkExe = Get-Command AutoHotkey.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
@@ -162,7 +174,9 @@ if (-not $AHK_OK) {
     }
 }
 
-# ── Done ──────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
+# Done
+# -----------------------------------------------------------------------------
 
 Write-Host ""
 Write-Host "  You're ready to roll!"
