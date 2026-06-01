@@ -7,18 +7,6 @@
 ; + = SHIFT
 ; # = WIN
 
-; --------------------------------------------------------------
-
-; Todo: 
-; Prevent Alt from activating top menu bar on Premiere
-; Fix "Reveal in Explorer" not working on Premiere (and hence "Open clip with Mediainfo" macro not working either)
-; Cmd+Shift+V cuts (macOS style)
-; Adjust special characters according to language used
-; Macro to install: VLC, MediaInfo, Winrar
-; Fix issues with backtick and backslash keys
-; Fix issues with pound and euro symbols
-
-
 ; -------------------------------------------------------------
 ; Header
 ; --------------------------------------------------------------
@@ -188,7 +176,7 @@ LWin & Tab::AltTab
 
 vkDC::Send "``"        ; produces `
 +vkDC::~               ; produces ~
-; vkDE::Send "{Blind}\\"             ; it should produce \ but it doesn't
+; vkDE::Send "{Blind}\"             ; test again knowing that ` is the escape character on v2 syntax (\ was on v1 so vkDE::Send "{Blind}\\" didn't work)
 +vkDE::Send "{|}"      ; produces |
 +'::"
 +2::@
@@ -349,28 +337,26 @@ TryAccent(key) {
 
 ; Open clip with MediaInfo
 #+i:: {
-    ; 1. Simulate Premiere Pro Keystroke
-    Send("!+f")
-
-    ; 2. Beat the Tab Bug: Use the Clipboard to get the REAL selection
     Static mediaInfoApp := A_ProgramFiles '\MediaInfo\MediaInfo.exe'
     
-    if WinActive("ahk_class CabinetWClass") || WinActive("ahk_class Progman") || WinActive("ahk_class WorkerW") {
-        oldClip := ClipboardAll() ; Save current clipboard
-        A_Clipboard := ""
-        
-        Send("^c") ; Copy selection
-        if ClipWait(0.5) {
-            ; AHK automatically handles multiple file paths with newlines
-            for itemPath in StrSplit(A_Clipboard, "`n", "`r") {
-                if (itemPath != "") {
-                    ; Open each item in MediaInfo
-                    Run(mediaInfoApp ' "' itemPath '"')
-                }
-            }
-        }
-        
-        A_Clipboard := oldClip ; Restore clipboard
+    Send("!+f")  ; Reveal in Explorer
+    
+    ; Wait for Explorer window to become active
+    if !WinWaitActive("ahk_class CabinetWClass", , 3)
+        return
+    
+    Sleep(200)
+    
+    ; Save the handle of this specific Explorer window
+    explorerHwnd := WinActive()
+    
+    For item in getSelected()
+        Run(mediaInfoApp ' "' item '"')
+    
+    ; Wait for MediaInfo to open
+    if WinWaitActive("ahk_exe MediaInfo.exe", , 3) {
+        WinClose("ahk_id " explorerHwnd)
+        WinActivate("ahk_exe MediaInfo.exe")
     }
 }
 
@@ -535,6 +521,52 @@ Enter:: {
     Run("explorer.exe " . downloadsPath)
 }
 
+; New Folder With Items
+#^n:: {
+    ; 1. Extract absolute paths using your existing helper function
+    selectedPaths := getSelected()
+    if (selectedPaths.Length == 0) {
+        return
+    }
+    
+    ; 2. Extract the parent directory directly from the first selected item.
+    ; This bypasses the fragile COM hwnd matching entirely.
+    SplitPath(selectedPaths[1], , &dirPath)
+    dirPath := RTrim(dirPath, "\") ; Prevent double slashes if working at the root of a drive
+    
+    ; 3. Determine base name and iterate to find an available folder name
+    baseName := "New folder with items"
+    newFolderPath := dirPath "\" baseName
+    
+    if DirExist(newFolderPath) {
+        counter := 2
+        while DirExist(dirPath "\New folder with items (" counter ")") {
+            counter++
+        }
+        newFolderPath := dirPath "\New folder with items (" counter ")"
+    }
+    
+    ; 4. Create the target folder
+    DirCreate(newFolderPath)
+    
+    ; 5. Route directories to DirMove and files to FileMove
+    for itemPath in selectedPaths {
+        try {
+            ; Evaluate attributes: D indicates it is a directory
+            if InStr(FileExist(itemPath), "D") {
+                SplitPath(itemPath, &folderName)
+                ; DirMove requires the exact new folder name appended to the destination
+                DirMove(itemPath, newFolderPath "\" folderName)
+            } else {
+                ; FileMove into a directory requires a trailing backslash
+                FileMove(itemPath, newFolderPath "\")
+            }
+        } catch {
+            continue ; Silently skip locked/system files to ensure the loop finishes
+        }
+    }
+}
+
 #HotIf
 
 getSelected() {
@@ -550,3 +582,6 @@ getSelected() {
   }
  Return selection
 }
+
+; Empty the Recycle Bin without displaying a confirmation prompt
+#!+Backspace::FileRecycleEmpty()
