@@ -23,6 +23,10 @@ $WINGET_OK   = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
 $PKGS_DONE_OK = Is-Done "winget_packages"
 $AHK_OK      = Is-Done "ahk"
 
+$KB_Speed = (Get-ItemProperty -Path "HKCU:\Control Panel\Keyboard" -Name "KeyboardSpeed" -ErrorAction SilentlyContinue).KeyboardSpeed
+$KB_Delay = (Get-ItemProperty -Path "HKCU:\Control Panel\Keyboard" -Name "KeyboardDelay" -ErrorAction SilentlyContinue).KeyboardDelay
+$KB_OK    = ($KB_Speed -eq "31") -and ($KB_Delay -eq "0")
+
 function winget_installed($id) {
     if (-not $WINGET_OK) { return $false }
     $result = winget list --id $id --accept-source-agreements 2>$null
@@ -43,6 +47,10 @@ Write-Host ""
 # Premiere shortcuts
 if ($PREMIERE_OK) { Would-Run  "Premiere shortcuts" }
 else              { Would-Skip "Premiere shortcuts — not installed" }
+
+# Keyboard preferences
+if ($KB_OK) { Already-Done "Keyboard preferences" }
+else        { Would-Run    "Keyboard preferences" }
 
 # winget packages
 $CORE_PKGS = @(
@@ -99,6 +107,13 @@ if ($PREMIERE_OK) {
             curl.exe -s --output-dir "$($dir.FullName)" -O "https://raw.githubusercontent.com/lucuma13/load/refs/heads/main/src/data/Luis_Mengo_25.1_WINDOWS.kys"
         }
     }
+}
+
+# ── Keyboard preferences ─────────────────────────────────────────────────────
+
+if (-not $KB_OK) {
+    Set-ItemProperty -Path "HKCU:\Control Panel\Keyboard" -Name "KeyboardSpeed" -Value 31
+    Set-ItemProperty -Path "HKCU:\Control Panel\Keyboard" -Name "KeyboardDelay" -Value 0
 }
 
 # ── Managed packages ──────────────────────────────────────────────────────────

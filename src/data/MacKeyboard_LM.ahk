@@ -397,81 +397,70 @@ TryAccent(key) {
 #HotIf
 
 ; --------------------------------------------------------------
-;  App-specific - Explorer/Finder
+;  App-specific - File Explorer/Finder
 ; --------------------------------------------------------------
 
 #HotIf WinActive("ahk_class CabinetWClass")
 
-#1::Send "^!2" ; View as Large Icons
-#2::Send "^!6" ; View as Details
-#3::Send "^!5" ; View as List
+#1:: ; View as Large Icons
+{
+    hWnd := WinActive()
+    for oWin in ComObject("Shell.Application").Windows
+        if oWin.Hwnd = hWnd
+            oWin.Document.CurrentViewMode := 1
+}
+
+#2:: ; View as Details
+{
+    hWnd := WinActive()
+    for oWin in ComObject("Shell.Application").Windows
+        if oWin.Hwnd = hWnd
+            oWin.Document.CurrentViewMode := 4
+}
+
+#3:: ; View as List
+{
+    hWnd := WinActive()
+    for oWin in ComObject("Shell.Application").Windows
+        if oWin.Hwnd = hWnd
+            oWin.Document.CurrentViewMode := 3
+}
 
 #j:: ; View options
 {
-Send "!v"
-Send "{Right}"
+    Run "control.exe folders"
 }
 
 
-#+.:: ; Show hidden files
-{
-Send "!v"
-Send "hh"
+#+.:: { ; Toggle hidden files
+    regPath := "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced"
+    current := RegRead(regPath, "Hidden")
+    RegWrite(current = 1 ? 2 : 1, "REG_DWORD", regPath, "Hidden")
+    Sleep 100
+    ; Broadcast settings change to all windows including Explorer
+    SendMessage 0x1A, 0, 0, , "ahk_class CabinetWClass"  ; WM_SETTINGCHANGE
 }
 
 #i::Send "!{Enter}"
 #[::Send "!{Left}" ; Go to prior folder in history
 #]::Send "!{Right}" ; Go to next folder in history
 
-; Cmd+Down will extract a zip/rar file, or open anything else
 #Down:: {
-    oldClip := ClipboardAll()
-    A_Clipboard := ""
-    Send("^c")
-    
-    if !ClipWait(0.5) {
-        A_Clipboard := oldClip
-        return
-    }
-
-    ; Split the clipboard into individual lines (one for each file)
-    fileList := StrSplit(A_Clipboard, "`n", "`r")
-
-    for selectedPath in fileList {
-        if (selectedPath == "")
-            continue
-
-        ; Clean the individual path
-        currentPath := Trim(selectedPath, '" `t`r`n')
+    for currentPath in getSelected() {
         SplitPath(currentPath, , , &ext)
-
-        if (ext = "zip" || ext = "rar" || ext = "7z") {
+        if (ext = "zip") {
             destPath := RegExReplace(currentPath, "\.[^.\\]+$")
-            
-            if (ext = "zip") {
-                ; PowerShell command with escaped quotes for each specific file
-                psCmd := 'powershell.exe -NoProfile -Command "Expand-Archive -Path \`"' currentPath '\`" -DestinationPath \`"' destPath '\`" -Force"'
-                Run(psCmd, , "Hide")
-            } else {
-                ; For RAR/7Z, we have to use the UI method. 
-                ; Note: This opens a menu for each file, which can be messy for 10+ files.
-                Run('explorer.exe /select,"' currentPath '"') ; Ensure focus is right
-                Sleep(50)
-                Send("+{F10}") 
-                Sleep(100)
-                Send("e")
-            }
+            dq := Chr(34)
+            psCmd := "powershell.exe -NoProfile -Command Expand-Archive -Path " . dq . currentPath . dq . " -DestinationPath " . dq . destPath . dq . " -Force"
+            Run(psCmd, , "Hide")
+        } else if (ext = "rar" || ext = "7z") {
+            destPath := RegExReplace(currentPath, "\.[^.\\]+$")
+            sevenZip := "C:\Program Files\7-Zip\7z.exe"
+            Run('"' . sevenZip . '" x "' . currentPath . '" -o"' . destPath . '" -y', , "Hide")
         } else {
-            ; Open non-archive files
-            Run('"' currentPath '"')
+            Run('"' . currentPath . '"')
         }
     }
-
-    if (fileList.Length > 1)
-        ToolTip("Processing " fileList.Length " items...")
-    
-    SetTimer(() => ToolTip(), -2000)
-    A_Clipboard := oldClip
 }
 
 #Up::Send "!{Up}"
@@ -503,6 +492,49 @@ Enter:: {
    Run app ' "' item '"'
 }
 
+#+j:: {
+        ; Use the shell environment variable for the Downloads path
+        downloadsPath := EnvGet("USERPROFILE") "\Downloads"
+        hWnd := WinActive()
+        For window in ComObject("Shell.Application").Windows {
+            if (window.HWND = hWnd) {
+                window.Navigate(downloadsPath)
+                return
+            }
+        }
+        Run(downloadsPath)
+    }
+
+#+a:: {
+    appsFolder := EnvGet("ProgramData") "\Microsoft\Windows\Start Menu\Programs"
+    hWnd := WinActive()
+    For window in ComObject("Shell.Application").Windows {
+        if (window.HWND = hWnd) {
+            window.Navigate(appsFolder)
+            return
+        }
+    }
+    Run(appsFolder)
+}
+
+#+d:: {
+        desktopPath := A_Desktop
+        hWnd := WinActive()
+        For window in ComObject("Shell.Application").Windows {
+            if (window.HWND = hWnd) {
+                window.Navigate(desktopPath)
+                return
+            }
+        }
+        Run(desktopPath)
+    }
+
+; New File Explorer window opens at Downloads
+#n:: {
+    downloadsPath := EnvGet("USERPROFILE") "\Downloads"
+    Run("explorer.exe " . downloadsPath)
+}
+
 #HotIf
 
 getSelected() {
@@ -518,43 +550,3 @@ getSelected() {
   }
  Return selection
 }
-
-#+j:: {
-        ; Use the shell environment variable for the Downloads path
-        downloadsPath := EnvGet("USERPROFILE") "\Downloads"
-        
-        ; Navigate the current active Explorer window
-        For window in ComObject("Shell.Application").Windows {
-            if (window.HWND == WinActive("A")) {
-                window.Navigate(downloadsPath)
-                return
-            }
-        }
-        ; Fallback: If navigation fails, just open a new window
-        Run(downloadsPath)
-    }
-
-#+a:: {
-        ; This is the Windows Shell ID for the Applications folder
-        appsFolder := "shell:AppsFolder"
-        
-        For window in ComObject("Shell.Application").Windows {
-            if (window.HWND == WinActive("A")) {
-                window.Navigate(appsFolder)
-                return
-            }
-        }
-        Run(appsFolder)
-    }
-
-#+d:: {
-        desktopPath := A_Desktop
-        
-        For window in ComObject("Shell.Application").Windows {
-            if (window.HWND == WinActive("A")) {
-                window.Navigate(desktopPath)
-                return
-            }
-        }
-        Run(desktopPath)
-    }
