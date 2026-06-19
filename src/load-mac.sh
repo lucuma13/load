@@ -4,11 +4,18 @@
 
 set -euo pipefail
 
-PROGRESS_DIR="$HOME/Downloads/.load-mac"
-mkdir -p "$PROGRESS_DIR"
-
-mark_done() { touch "$PROGRESS_DIR/$1"; }
-is_done()   { [ -f "$PROGRESS_DIR/$1" ]; }
+# Re-exec from a real file when piped (curl | bash). Reading the script from
+# stdin lets child processes (e.g. brew's ca-certificates keychain step) drain
+# the remaining script out of the pipe, silently skipping later sections such
+# as Pro Video Formats. Running from a file makes this impossible. Skipped with
+# --fast, which runs none of the stdin-draining steps (brew install, PVF).
+SELF_URL="https://raw.githubusercontent.com/lucuma13/load/main/src/load-mac.sh"
+case " $* " in *" --fast "*) FAST_ARG=true ;; *) FAST_ARG=false ;; esac
+if ! $FAST_ARG && { [ ! -r "${BASH_SOURCE[0]:-}" ] || [ "${BASH_SOURCE[0]:-}" = "bash" ]; }; then
+  TMP="$(mktemp -t load-mac).sh"
+  curl -fsSL "$SELF_URL" -o "$TMP"
+  exec bash "$TMP" "$@"
+fi
 
 brew_prefix() {
   if [ -n "${HOMEBREW_PREFIX:-}" ]; then
@@ -35,8 +42,6 @@ done
 
 PREMIERE_OK=false;   ls "$HOME/Documents/Adobe/Premiere Pro"/*/Profile-*/Mac &>/dev/null 2>&1          && PREMIERE_OK=true
 BREW_OK=false;       command -v brew &>/dev/null                                                         && BREW_OK=true
-BREW_PKGS_OK=false;  is_done "brew_packages"                                                             && BREW_PKGS_OK=true
-BREW_FULL_OK=false;  is_done "brew_packages_full"                                                        && BREW_FULL_OK=true
 PVF_OK=false
 { [ -d "/Library/Apple/System/Library/CoreServices/ProVideoFormats.bundle" ] || \
   pkgutil --pkg-info com.apple.pkg.ProVideoFormats &>/dev/null 2>&1; } && PVF_OK=true
@@ -47,11 +52,16 @@ already_done(){ echo "  ✅  $1"; }
 
 echo ""
 
-# Premiere shortcuts
+# Premiere shortcuts & workspace
 if $PREMIERE_OK; then
   would_run  "Premiere shortcuts"
+  would_run  "Premiere workspace"
+  if $FAST; then would_skip "Premiere plugins (--fast)"
+  else           would_run  "Premiere plugins — Animation Composer, Flicker Free"; fi
 else
   would_skip "Premiere shortcuts — not installed"
+  would_skip "Premiere workspace — not installed"
+  would_skip "Premiere plugins — not installed"
 fi
 
 # System / Finder / TextEdit — always run
@@ -67,13 +77,6 @@ elif $FAST; then
 else
   would_run "Homebrew"
 fi
-
-# Managed packages
-CORE_FORMULAE="media-info exiftool ffmpeg uv"
-CORE_CASKS="vlc caffeine mediainfo"
-CORE_UV="triplecheck"
-FULL_FORMULAE="atomicparsley bento4 wget git"
-FULL_CASKS="google-chrome mediahuman-audio-converter audacity appcleaner"
 
 # Managed packages
 CORE_FORMULAE="media-info exiftool ffmpeg uv"
@@ -109,8 +112,8 @@ else
 
   PKGS_DONE="${PKGS_DONE# }"; PKGS_TODO="${PKGS_TODO# }"
 
-  [ -n "$PKGS_DONE" ] && already_done "managed packages: $(echo $PKGS_DONE | tr ' ' ',')"
-  [ -n "$PKGS_TODO" ] && would_run    "managed packages: $(echo $PKGS_TODO | tr ' ' ',')"
+  [ -n "$PKGS_DONE" ] && would_run "update managed packages: $(echo $PKGS_DONE | tr ' ' ',')"
+  [ -n "$PKGS_TODO" ] && would_run "install managed packages: $(echo $PKGS_TODO | tr ' ' ',')"
 fi
 
 # Pro Video Formats
@@ -122,24 +125,19 @@ else
   would_run "Pro Video Formats"
 fi
 
+# LUTs
+if $FAST; then
+  would_skip "LUTs (--fast)"
+else
+  would_run "LUTs"
+fi
+
 echo ""
 $DRY_RUN && exit 0
 
-# Cache sudo credentials once, silently, and keep them alive
-sudo -v
-while true; do sudo -n true; sleep 60; kill -0 "$$" || exit; done 2>/dev/null &
-
-# -----------------------------------------------------------------------------
-# Premiere Pro shortcuts
-# -----------------------------------------------------------------------------
-
-if $PREMIERE_OK; then
-  for dir in "$HOME/Documents/Adobe/Premiere Pro"/*/; do
-    if ls "$dir"Profile-*/Win &>/dev/null 2>&1; then
-      (cd "$dir" && curl -fsSL -O "https://raw.githubusercontent.com/lucuma13/load/main/src/data/Luis_Mengo_25.1.kys")
-    fi
-  done
-fi
+# The lightweight config below runs before any slow download/install so that an
+# interrupted run still leaves the quick preference changes applied. Finder is
+# the exception — it needs python3 (Command Line Tools), so it follows CLT.
 
 # -----------------------------------------------------------------------------
 # System preferences
@@ -159,7 +157,55 @@ defaults write com.apple.dock show-recents -bool false
 killall Dock
 
 # -----------------------------------------------------------------------------
-# System preferences
+# TextEdit preferences
+# -----------------------------------------------------------------------------
+
+defaults write com.apple.TextEdit RichText -int 0
+defaults write com.apple.TextEdit CorrectSpellingAutomatically -bool false
+defaults write com.apple.TextEdit SmartDashes -bool false
+defaults write NSGlobalDomain NSAutomaticDashSubstitutionEnabled -bool false
+defaults write com.apple.TextEdit TextReplacement -bool false
+defaults write NSGlobalDomain NSAutomaticTextCompletionEnabled -bool false
+defaults write com.apple.TextEdit ShowRuler -bool false
+killall cfprefsd
+killall AppleSpell 2>/dev/null || true
+killall TextEdit 2>/dev/null || true
+
+# -----------------------------------------------------------------------------
+# Premiere Pro shortcuts & workspace
+# -----------------------------------------------------------------------------
+
+if $PREMIERE_OK; then
+  # Drop the shortcuts
+  for dir in "$HOME/Documents/Adobe/Premiere Pro"/*/; do
+    if ls "$dir"Profile-*/Mac &>/dev/null 2>&1; then
+      (cd "$dir" && curl -fsSL -O "https://raw.githubusercontent.com/lucuma13/load/main/src/data/Luis_Mengo_25.1.kys")
+    fi
+  done
+
+  # Drop the workspace
+  for profile in "$HOME/Documents/Adobe/Premiere Pro"/*/Profile-*/; do
+    [ -d "$profile" ] || continue
+    mkdir -p "${profile}Layouts"
+    (cd "${profile}Layouts" && curl -fsSL -O "https://raw.githubusercontent.com/lucuma13/load/main/src/data/UserWorkspace_LGG.xml")
+  done
+fi
+
+# -----------------------------------------------------------------------------
+# Command Line Tools (provides git/python3; required by Homebrew)
+# -----------------------------------------------------------------------------
+# Skipped with --fast, which assumes an already-provisioned machine. Without
+# this, a fresh Mac triggers the Xcode CLT dialog mid-run and aborts, forcing a
+# manual re-run. We pop the installer and wait for it to finish.
+
+if ! $FAST && ! xcode-select -p &>/dev/null; then
+  echo "  🚀  Command Line Tools — installing (accept the dialog; this can take a few minutes)…"
+  xcode-select --install &>/dev/null || true
+  until xcode-select -p &>/dev/null; do sleep 10; done
+fi
+
+# -----------------------------------------------------------------------------
+# Finder preferences (needs python3 from Command Line Tools)
 # -----------------------------------------------------------------------------
 
 defaults write com.apple.finder ShowPathbar -bool true
@@ -192,19 +238,13 @@ sleep 1
 open -a Finder
 
 # -----------------------------------------------------------------------------
-# TextEdit preferences
+# Cache sudo credentials (only the steps below need root) and keep them alive
 # -----------------------------------------------------------------------------
 
-defaults write com.apple.TextEdit RichText -int 0
-defaults write com.apple.TextEdit CorrectSpellingAutomatically -bool false
-defaults write com.apple.TextEdit SmartDashes -bool false
-defaults write NSGlobalDomain NSAutomaticDashSubstitutionEnabled -bool false
-defaults write com.apple.TextEdit TextReplacement -bool false
-defaults write NSGlobalDomain NSAutomaticTextCompletionEnabled -bool false
-defaults write com.apple.TextEdit ShowRuler -bool false
-killall cfprefsd
-killall AppleSpell 2>/dev/null || true
-killall TextEdit 2>/dev/null || true
+if ! $FAST; then
+  sudo -v
+  while true; do sudo -n true; sleep 60; kill -0 "$$" || exit; done 2>/dev/null &
+fi
 
 # -----------------------------------------------------------------------------
 # Homebrew & Managed Packages
@@ -225,17 +265,49 @@ PREFIX="$(brew_prefix)"
 eval "$("${PREFIX}/bin/brew" shellenv)" 2>/dev/null || true
 
 
-if ! $BREW_PKGS_OK && ! $FAST; then
-  brew install --adopt media-info exiftool ffmpeg uv
-  brew install --cask --adopt vlc caffeine mediainfo
-  uv tool install triplecheck
-  mark_done "brew_packages"
+if ! $FAST; then
+  brew install --adopt        $CORE_FORMULAE
+  brew install --cask --adopt $CORE_CASKS
+  for pkg in $CORE_UV; do uv tool install "$pkg" --upgrade; done
 fi
 
-if $FULL && ! $BREW_FULL_OK && ! $FAST; then
-  brew install --adopt atomicparsley bento4 wget git
-  brew install --cask --adopt google-chrome mediahuman-audio-converter audacity appcleaner
-  mark_done "brew_packages_full"
+# Ensure uv-installed CLI tools (~/.local/bin) are on PATH. `uv tool
+# update-shell` detects the active shell and updates the right profile (safer
+# than hardcoding ~/.zprofile). Idempotent. Export covers the current session.
+if command -v uv &>/dev/null; then
+  uv tool update-shell || true
+fi
+export PATH="$HOME/.local/bin:$PATH"
+
+if $FULL && ! $FAST; then
+  brew install --adopt        $FULL_FORMULAE
+  brew install --cask --adopt $FULL_CASKS
+fi
+
+# -----------------------------------------------------------------------------
+# Premiere plugins
+# -----------------------------------------------------------------------------
+# Mister Horse's Product Manager is the app that installs & updates Animation
+# Composer (and the rest of the Mister Horse plugins) into Premiere/After
+# Effects. We download the Product Manager installer and run it; Animation
+# Composer itself is then installed from within the app on first launch.
+
+if $PREMIERE_OK && ! $FAST; then
+  PM_DMG="$HOME/Downloads/MisterHorseProductManager.dmg"
+  curl -fsSL -o "$PM_DMG" "https://misterhorse.com/downloads/product-manager/osx"
+  VOL="$(hdiutil attach "$PM_DMG" -nobrowse | grep -o '/Volumes/.*' | head -1 || true)"
+  PM_APP="$(find "$VOL" -maxdepth 1 -name '*.app' 2>/dev/null | head -1 || true)"
+  [ -n "$PM_APP" ] && sudo cp -R "$PM_APP" /Applications/
+  [ -n "$VOL" ] && hdiutil detach "$VOL" -quiet
+
+  # Flicker Free — Digital Anarchy's deflicker plugin. The DMG holds a .pkg we
+  # install straight to the system; the plugin then shows up in Premiere/AE.
+  FF_DMG="$HOME/Downloads/flickerfree_229_AE.dmg"
+  curl -fsSL -o "$FF_DMG" "https://www.digitalanarchy.com/downloads/flickerfree_229_AE.dmg"
+  FF_VOL="$(hdiutil attach "$FF_DMG" -nobrowse | grep -o '/Volumes/.*' | head -1 || true)"
+  FF_PKG="$(find "$FF_VOL" -maxdepth 1 -name '*.pkg' 2>/dev/null | head -1 || true)"
+  [ -n "$FF_PKG" ] && sudo installer -pkg "$FF_PKG" -target /
+  [ -n "$FF_VOL" ] && hdiutil detach "$FF_VOL" -quiet
 fi
 
 # -----------------------------------------------------------------------------
@@ -254,6 +326,33 @@ if ! $PVF_OK && ! $FAST; then
   sudo installer -pkg "/Volumes/Pro Video Formats/ProVideoFormats.pkg" -target /
   hdiutil detach "/Volumes/Pro Video Formats" -quiet
   rm "$DMG_PATH"
+fi
+
+# -----------------------------------------------------------------------------
+# LUTs
+# -----------------------------------------------------------------------------
+# Download every LUT in src/data/LUTs into ~/Downloads/LUTs (skipped --fast).
+# The file list comes from the GitHub contents API, so new LUTs are picked up
+# automatically without editing this script.
+
+if ! $FAST; then
+  LUT_DIR="$HOME/Downloads/LUTs"
+  LUT_API="https://api.github.com/repos/lucuma13/load/contents/src/data/LUTs?ref=main"
+  mkdir -p "$LUT_DIR"
+  LUT_URLS="$(curl -fsSL "$LUT_API" | grep -o 'https://raw.githubusercontent.com/[^"]*' || true)"
+  for url in $LUT_URLS; do
+    (cd "$LUT_DIR" && curl -fsSL -O "$url")
+  done
+fi
+
+# -----------------------------------------------------------------------------
+# Homebrew maintenance — refresh catalog, upgrade everything, prune old versions
+# -----------------------------------------------------------------------------
+
+if ! $FAST && command -v brew &>/dev/null; then
+  brew update
+  brew upgrade
+  brew cleanup
 fi
 
 # -----------------------------------------------------------------------------
