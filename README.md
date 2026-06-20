@@ -1,25 +1,17 @@
 ## 🚗 Auto Set Up Workstation
 
+Run the line for your OS. With no flag it prompts for the setup type — **Fast**
+(config only) or **Full** (everything). Append `--fast` or `--full` to skip the
+prompt (`--dry-run` previews without changing anything).
+
 * macOS
-Fast set-up:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/lucuma13/load/main/src/load-mac.sh | bash -s -- --fast
+curl -fsSL https://raw.githubusercontent.com/lucuma13/load/main/src/load-mac.sh | bash
 ```
 
-Full set-up:
-```bash
-curl -fsSL https://raw.githubusercontent.com/lucuma13/load/main/src/load-mac.sh | bash -s -- --full
-```
-
-* Windows:
-Fast set-up:
+* Windows (PowerShell):
 ```powershell
-Invoke-WebRequest -Uri "https://raw.githubusercontent.com/lucuma13/load/main/src/load-win.ps1" -UseBasicParsing | Set-Content "$env:TEMP\load-win.ps1" -Encoding UTF8; powershell -ExecutionPolicy Bypass -File "$env:TEMP\load-win.ps1" --fast
-```
-
-Full set-up:
-```powershell
-Invoke-WebRequest -Uri "https://raw.githubusercontent.com/lucuma13/load/main/src/load-win.ps1" -UseBasicParsing | Set-Content "$env:TEMP\load-win.ps1" -Encoding UTF8; powershell -ExecutionPolicy Bypass -File "$env:TEMP\load-win.ps1" --full
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/lucuma13/load/main/src/load-win.ps1" -UseBasicParsing | Set-Content "$env:TEMP\load-win.ps1" -Encoding UTF8; powershell -ExecutionPolicy Bypass -File "$env:TEMP\load-win.ps1"
 ```
 
 

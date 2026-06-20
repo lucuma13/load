@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  bats-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install bats-core
+        run: brew install bats-core
+      - name: Syntax check
+        run: make check
+      - name: Run tests
+        run: make test
+
+  # Future: the Windows entrypoint (src/load-win.ps1) gets a symmetric Pester job
+  # once the Premiere activation logic is ported there. Mirrors the bats job:
+  #
+  # pester-windows:
+  #   runs-on: windows-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - name: Run Pester
+  #       shell: pwsh
+  #       run: Invoke-Pester -Path tests -Output Detailed

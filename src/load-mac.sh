@@ -1,21 +1,18 @@
 #!/bin/bash
 # Mac workstation setup script
-# Usage: curl -fsSL https://raw.githubusercontent.com/lucuma13/load/main/src/load-mac.sh | bash -s -- --full
+# Usage: curl -fsSL https://raw.githubusercontent.com/lucuma13/load/main/src/load-mac.sh | bash
+#   Run with no flag to be prompted for the setup type, or pass one explicitly.
+# Flags: --fast  --full  --dry-run
 
-set -euo pipefail
-
-# Re-exec from a real file when piped (curl | bash). Reading the script from
-# stdin lets child processes (e.g. brew's ca-certificates keychain step) drain
-# the remaining script out of the pipe, silently skipping later sections such
-# as Pro Video Formats. Running from a file makes this impossible. Skipped with
-# --fast, which runs none of the stdin-draining steps (brew install, PVF).
 SELF_URL="https://raw.githubusercontent.com/lucuma13/load/main/src/load-mac.sh"
-case " $* " in *" --fast "*) FAST_ARG=true ;; *) FAST_ARG=false ;; esac
-if ! $FAST_ARG && { [ ! -r "${BASH_SOURCE[0]:-}" ] || [ "${BASH_SOURCE[0]:-}" = "bash" ]; }; then
-  TMP="$(mktemp -t load-mac).sh"
-  curl -fsSL "$SELF_URL" -o "$TMP"
-  exec bash "$TMP" "$@"
-fi
+
+# =============================================================================
+# Function library
+#
+# Everything above the LOAD_LIB guard is side-effect-free definitions, so the
+# test suite can `source` this file (with LOAD_LIB=1) to exercise individual
+# functions without triggering the installer.
+# =============================================================================
 
 brew_prefix() {
   if [ -n "${HOMEBREW_PREFIX:-}" ]; then
@@ -27,28 +24,180 @@ brew_prefix() {
   fi
 }
 
+would_run()   { echo "  🚀  $1"; }
+would_skip()  { echo "  ⏭️  $1"; }
+already_done(){ echo "  ✅  $1"; }
+
+formula_installed() { $BREW_OK && brew list --formula "$1" &>/dev/null 2>&1; }
+cask_installed()    { $BREW_OK && brew list --cask    "$1" &>/dev/null 2>&1; }
+uv_installed()      { command -v uv &>/dev/null && uv tool list 2>/dev/null | grep -q "^$1"; }
+
+# resolve_mode <args…> — echo the setup flags present, normalised and deduped
+# (a space-separated subset of "fast full dryrun"); empty when none were given.
+resolve_mode() {
+  local arg out=""
+  for arg in "$@"; do
+    case "$arg" in
+      --fast)    case " $out " in *" fast "*)   ;; *) out="$out fast"   ;; esac ;;
+      --full)    case " $out " in *" full "*)   ;; *) out="$out full"   ;; esac ;;
+      --dry-run) case " $out " in *" dryrun "*) ;; *) out="$out dryrun" ;; esac ;;
+    esac
+  done
+  echo "${out# }"
+}
+
+# choose_mode — prompt on the terminal for Fast/Full and echo "fast"/"full".
+# Reads /dev/tty (not stdin, which is the piped script under curl | bash).
+# Returns 1 when there is no terminal to prompt from.
+choose_mode() {
+  # Open the terminal on fd 3 (stdin is the piped script under curl | bash).
+  # Probe inside a redirected group so a missing tty fails quietly.
+  { exec 3<>/dev/tty; } 2>/dev/null || return 1
+  local reply
+  while true; do
+    printf '%s' "  Setup type — [1] Fast (config only)  [2] Full (everything): " >&3
+    read -r reply <&3 || { exec 3>&-; return 1; }
+    case "$reply" in
+      1|fast|Fast) exec 3>&-; echo fast; return 0 ;;
+      2|full|Full) exec 3>&-; echo full; return 0 ;;
+      *) printf '%s\n' "  Please enter 1 or 2." >&3 ;;
+    esac
+  done
+}
+
+usage() {
+  echo "Usage: load-mac.sh [--fast | --full | --dry-run]" >&2
+  echo "  Run with no flag in a terminal to be prompted for the setup type." >&2
+}
+
+# premiere_workspace_name <workspace.xml> — echo the workspace display name,
+# stored inside the file under the UserName key.
+premiere_workspace_name() {
+  awk '/<key>UserName<\/key>/{getline; gsub(/<\/?ustring>/,""); print; exit}' "$1"
+}
+
+# set_pref_node <prefs> <node> <value> — replace an XML leaf node's text in place
+# (perl, no BOM). The value is passed via env so it survives spaces and regex/JSON
+# specials. Returns 1 WITHOUT touching the file when the node is absent, so callers
+# can flag nodes a future Premiere version may have renamed (no edit = no
+# corruption).
+set_pref_node() {
+  local prefs="$1" node="$2"
+  grep -q "<$node>" "$prefs" || return 1
+  SPN_VAL="$3" perl -i -pe "s{(<\Q$node\E>).*?(</\Q$node\E>)}{\${1}\$ENV{SPN_VAL}\${2}}" "$prefs"
+}
+
+# premiere_apply_prefs <prefs> <kys_file> <ws_name> — point Premiere's prefs at
+# the keyboard set + workspace, apply the Classic label preset, enable auto-save
+# every 5 minutes, and turn on the timeline's Link Selection + Display Settings.
+# Every node is matched exactly; any not found (e.g. renamed in a future Premiere
+# version) is left untouched and collected into a single "needs revising" warning,
+# so the script never crashes or corrupts the prefs on a version bump.
+premiere_apply_prefs() {
+  local prefs="$1" kys_file="$2" ws_name="$3"
+  # Built-in "Classic" label preset: 16 names + 16 colours + a RecentPreset
+  # marker (Premiere has no single preset switch, so we write the exact values).
+  local label_names=(Violet Iris Caribbean Lavender Cerulean Forest Rose Mango Purple Blue Teal Magenta Tan Green Brown Yellow)
+  local label_colors=(14717094 13408882 10016297 14910691 14597935 5814353 10776567 3909357 9896087 16727100 8421376 15151847 9814478 2191389 1262987 6611682)
+  local missing=() i tl_node
+
+  # Keyboard set
+  set_pref_node "$prefs" "FE.Prefs.Shortcuts.Filename" "$kys_file" || missing+=("FE.Prefs.Shortcuts.Filename")
+
+  # Active workspace (skip if the display name couldn't be read from the file)
+  if [ -n "$ws_name" ]; then
+    set_pref_node "$prefs" "FE.Application.LastWorkspaceName" "$ws_name" || missing+=("FE.Application.LastWorkspaceName")
+  fi
+
+  # Classic label preset (names + colours + preset marker)
+  for i in "${!label_names[@]}"; do
+    set_pref_node "$prefs" "BE.Prefs.LabelNames.$i"  "${label_names[$i]}"  || missing+=("BE.Prefs.LabelNames.$i")
+    set_pref_node "$prefs" "BE.Prefs.LabelColors.$i" "${label_colors[$i]}" || missing+=("BE.Prefs.LabelColors.$i")
+  done
+  set_pref_node "$prefs" "PPro.LabelColorPresets.RecentPreset" '{"builtIn":true,"name":"Classic"}' || missing+=("PPro.LabelColorPresets.RecentPreset")
+
+  # Auto-save: on, every 5 minutes
+  set_pref_node "$prefs" "BE.Prefs.AutoSave.DoSave"   "true" || missing+=("BE.Prefs.AutoSave.DoSave")
+  set_pref_node "$prefs" "BE.Prefs.AutoSave.Interval" "5"    || missing+=("BE.Prefs.AutoSave.Interval")
+
+  # Timeline toggles: Link Selection + the Display Settings (wrench menu) —
+  # video thumbnails/names, audio waveforms/names, FX/proxy badges, through
+  # edits, duplicate-frame markers.
+  for tl_node in \
+    TL.PREFLinkedSelectionState \
+    be.Prefs.Timeline.Show.Video.Thumbnails \
+    be.Prefs.Timeline.Show.Video.Names \
+    be.Prefs.Timeline.Show.Audio.Waveforms \
+    be.Prefs.Timeline.Show.Audio.Names \
+    be.Prefs.Timeline.Show.Proxy.Badges \
+    TL.PREFShowFXBadges \
+    TL.PREFShowThroughEditsState \
+    MZ.SQShowDuplicateMarkers; do
+    set_pref_node "$prefs" "$tl_node" "true" || missing+=("$tl_node")
+  done
+
+  # A missing node almost always means Premiere renamed it in a new version. The
+  # file is untouched for those nodes (never corrupted); warn loudly so the
+  # script gets revised.
+  if [ "${#missing[@]}" -gt 0 ]; then
+    echo "  ⚠️  Premiere prefs: ${#missing[@]} preference node(s) not found — Premiere may"
+    echo "      have renamed them in this version. These settings were NOT applied; the"
+    echo "      script needs revising for the following nodes:"
+    printf '        - %s\n' "${missing[@]}"
+  fi
+}
+
+# premiere_set_media_cache <plist-domain> <cache-dir> — point Premiere's shared
+# "Media Cache Files" location (the Adobe Common prefs) at <cache-dir>, stored
+# with a trailing slash. -dict-add updates FolderPath in place, preserving the
+# sibling DatabasePath (the Media Cache Database location).
+premiere_set_media_cache() {
+  local domain="$1" cache_dir="$2"
+  defaults write "$domain" "Media Cache" -dict-add FolderPath "${cache_dir%/}/"
+}
+
+# Sourced as a library (tests set LOAD_LIB=1): stop here, run nothing below.
+[ -n "${LOAD_LIB:-}" ] && return 0 2>/dev/null
+
+set -euo pipefail
+
+# -----------------------------------------------------------------------------
+# Resolve the setup mode — prompt when run with no flag
+# -----------------------------------------------------------------------------
+
+MODES="$(resolve_mode "$@")"
+if [ -z "$MODES" ]; then
+  CHOSEN="$(choose_mode)" || { usage; exit 1; }
+  set -- "--$CHOSEN"
+  MODES="$CHOSEN"
+fi
+
+FAST=false; FULL=false; DRY_RUN=false
+case " $MODES " in *" fast "*)   FAST=true    ;; esac
+case " $MODES " in *" full "*)   FULL=true    ;; esac
+case " $MODES " in *" dryrun "*) DRY_RUN=true ;; esac
+
+# Re-exec from a real file when piped (curl | bash) for non-fast runs. Reading
+# the script from stdin lets child processes (e.g. brew's ca-certificates
+# keychain step) drain the remaining script out of the pipe, silently skipping
+# later sections such as Pro Video Formats. Running from a file makes this
+# impossible. --fast runs none of the stdin-draining steps, so it stays on stdin.
+if ! $FAST && { [ ! -r "${BASH_SOURCE[0]:-}" ] || [ "${BASH_SOURCE[0]:-}" = "bash" ]; }; then
+  TMP="$(mktemp -t load-mac).sh"
+  curl -fsSL "$SELF_URL" -o "$TMP"
+  exec bash "$TMP" "$@"
+fi
+
 # -----------------------------------------------------------------------------
 # Preflight
 # -----------------------------------------------------------------------------
-
-FULL=false
-FAST=false
-DRY_RUN=false
-for arg in "$@"; do
-  [ "$arg" = "--full" ]     && FULL=true
-  [ "$arg" = "--fast" ]     && FAST=true
-  [ "$arg" = "--dry-run" ]  && DRY_RUN=true
-done
 
 PREMIERE_OK=false;   ls "$HOME/Documents/Adobe/Premiere Pro"/*/Profile-*/Mac &>/dev/null 2>&1          && PREMIERE_OK=true
 BREW_OK=false;       command -v brew &>/dev/null                                                         && BREW_OK=true
 PVF_OK=false
 { [ -d "/Library/Apple/System/Library/CoreServices/ProVideoFormats.bundle" ] || \
   pkgutil --pkg-info com.apple.pkg.ProVideoFormats &>/dev/null 2>&1; } && PVF_OK=true
-
-would_run()  { echo "  🚀  $1"; }
-would_skip() { echo "  ⏭️  $1"; }
-already_done(){ echo "  ✅  $1"; }
+SCRATCH="$(ls -d /Volumes/SCRATCH* 2>/dev/null | head -1 || true)"
 
 echo ""
 
@@ -56,6 +205,8 @@ echo ""
 if $PREMIERE_OK; then
   would_run  "Premiere shortcuts"
   would_run  "Premiere workspace"
+  if [ -n "$SCRATCH" ]; then would_run  "Premiere media cache → $SCRATCH/Cache"
+  else                       would_skip "Premiere media cache — no SCRATCH drive"; fi
   if $FAST; then would_skip "Premiere plugins (--fast)"
   else           would_run  "Premiere plugins — Animation Composer, Flicker Free"; fi
 else
@@ -84,10 +235,6 @@ CORE_CASKS="vlc caffeine mediainfo"
 CORE_UV="triplecheck"
 FULL_FORMULAE="atomicparsley bento4 wget git"
 FULL_CASKS="google-chrome mediahuman-audio-converter audacity appcleaner"
-
-formula_installed() { $BREW_OK && brew list --formula "$1" &>/dev/null 2>&1; }
-cask_installed()    { $BREW_OK && brew list --cask    "$1" &>/dev/null 2>&1; }
-uv_installed()      { command -v uv &>/dev/null && uv tool list 2>/dev/null | grep -q "^$1"; }
 
 if $FAST; then
   ALL_PKGS="$CORE_FORMULAE $CORE_CASKS $CORE_UV"
@@ -172,23 +319,53 @@ killall AppleSpell 2>/dev/null || true
 killall TextEdit 2>/dev/null || true
 
 # -----------------------------------------------------------------------------
-# Premiere Pro shortcuts & workspace
+# Premiere Pro shortcuts, workspace & labels
 # -----------------------------------------------------------------------------
 
 if $PREMIERE_OK; then
-  # Drop the shortcuts
-  for dir in "$HOME/Documents/Adobe/Premiere Pro"/*/; do
-    if ls "$dir"Profile-*/Mac &>/dev/null 2>&1; then
-      (cd "$dir" && curl -fsSL -O "https://raw.githubusercontent.com/lucuma13/load/main/src/data/Luis_Mengo_25.1.kys")
+  KYS_FILE="Luis_Mengo_25.1.kys"
+  WS_FILE="UserWorkspace_LGG.xml"
+
+  # Premiere rewrites its prefs on exit, so activating a set while it's running
+  # would get clobbered. Match the process name (version-agnostic, e.g. "Adobe
+  # Premiere Pro 2026") rather than full args, which would hit our own perl call.
+  PREMIERE_RUNNING=false
+  pgrep "Adobe Premiere Pro" &>/dev/null 2>&1 && PREMIERE_RUNNING=true
+
+  for profile in "$HOME/Documents/Adobe/Premiere Pro"/*/Profile-*/; do
+    [ -d "$profile" ] || continue
+    prefs="${profile}Adobe Premiere Pro Prefs"
+
+    # Drop the shortcuts into the Profile's Mac folder (where Premiere reads custom sets)
+    mkdir -p "${profile}Mac"
+    (cd "${profile}Mac" && curl -fsSL -O "https://raw.githubusercontent.com/lucuma13/load/main/src/data/$KYS_FILE")
+
+    # Drop the workspace into Layouts. Premiere auto-registers it on launch.
+    mkdir -p "${profile}Layouts"
+    (cd "${profile}Layouts" && curl -fsSL -O "https://raw.githubusercontent.com/lucuma13/load/main/src/data/$WS_FILE")
+    ws_name="$(premiere_workspace_name "${profile}Layouts/$WS_FILE")"
+
+    if $PREMIERE_RUNNING; then
+      echo "  ⚠️  Premiere Pro is running — files dropped but not activated"
+    elif [ -f "$prefs" ]; then
+      premiere_apply_prefs "$prefs" "$KYS_FILE" "$ws_name"
     fi
   done
 
-  # Drop the workspace
-  for profile in "$HOME/Documents/Adobe/Premiere Pro"/*/Profile-*/; do
-    [ -d "$profile" ] || continue
-    mkdir -p "${profile}Layouts"
-    (cd "${profile}Layouts" && curl -fsSL -O "https://raw.githubusercontent.com/lucuma13/load/main/src/data/UserWorkspace_LGG.xml")
-  done
+  # Media cache — relocate the "Media Cache Files" location to a SCRATCH drive
+  # when one is attached. The setting lives in the shared Adobe "Common" prefs
+  # (com.Adobe.Common <ver>), not the Premiere prefs; skip if no SCRATCH drive.
+  if [ -n "$SCRATCH" ]; then
+    mkdir -p "$SCRATCH/Cache"
+    if $PREMIERE_RUNNING; then
+      echo "  ⚠️  Premiere Pro is running — media cache not changed"
+    else
+      for plist in "$HOME/Library/Preferences/com.Adobe.Common "*.plist; do
+        [ -f "$plist" ] || continue
+        premiere_set_media_cache "$(basename "$plist" .plist)" "$SCRATCH/Cache"
+      done
+    fi
+  fi
 fi
 
 # -----------------------------------------------------------------------------

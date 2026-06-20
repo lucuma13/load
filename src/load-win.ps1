@@ -18,6 +18,21 @@ $FULL    = $args -contains "--full"
 $FAST    = $args -contains "--fast"
 $DRY_RUN = $args -contains "--dry-run"
 
+# No flag given — prompt for the setup type (Fast/Full). Bail if there's no
+# interactive console (e.g. CI) so we don't hang or guess into a heavy install.
+if (-not ($FULL -or $FAST -or $DRY_RUN)) {
+    if (-not [Environment]::UserInteractive) {
+        Write-Error "No setup flag given and no interactive console. Pass --fast or --full."
+        exit 1
+    }
+    do {
+        $reply = Read-Host "  Setup type - [1] Fast (config only)  [2] Full (everything)"
+        if     ($reply -in '1','fast','Fast') { $FAST = $true }
+        elseif ($reply -in '2','full','Full') { $FULL = $true }
+        else   { Write-Host "  Please enter 1 or 2." }
+    } while (-not ($FAST -or $FULL))
+}
+
 # -----------------------------------------------------------------------------
 # Preflight
 # -----------------------------------------------------------------------------
@@ -124,11 +139,9 @@ if ($DRY_RUN) { exit 0 }
 # -----------------------------------------------------------------------------
 
 if ($PREMIERE_OK) {
-    # Drop the shortcuts
-    foreach ($dir in Get-ChildItem "$HOME\Documents\Adobe\Premiere Pro" -Directory) {
-        if (Test-Path "$($dir.FullName)\Profile-*\Win") {
-            curl.exe -s --output-dir "$($dir.FullName)" -O "https://raw.githubusercontent.com/lucuma13/load/refs/heads/main/src/data/Luis_Mengo_25.1_WINDOWS.kys"
-        }
+    # Drop the shortcuts into each Profile's Win folder (where Premiere reads custom sets)
+    foreach ($winDir in Get-ChildItem "$HOME\Documents\Adobe\Premiere Pro\*\Profile-*\Win" -Directory -ErrorAction SilentlyContinue) {
+        curl.exe -s --output-dir "$($winDir.FullName)" -O "https://raw.githubusercontent.com/lucuma13/load/refs/heads/main/src/data/Luis_Mengo_25.1_WINDOWS.kys"
     }
 
     # Drop the workspace into every Profile's Layouts folder (any version, any Profile)
@@ -144,8 +157,22 @@ if ($PREMIERE_OK) {
 # -----------------------------------------------------------------------------
 
 if (-not $KB_OK) {
+    # Persist across reboots
     Set-ItemProperty -Path "HKCU:\Control Panel\Keyboard" -Name "KeyboardSpeed" -Value 31
     Set-ItemProperty -Path "HKCU:\Control Panel\Keyboard" -Name "KeyboardDelay" -Value 0
+
+    # Apply to the active session immediately (no logoff needed)
+    if (-not ([System.Management.Automation.PSTypeName]'KeyboardConfig').Type) {
+        Add-Type -TypeDefinition @"
+using System.Runtime.InteropServices;
+public class KeyboardConfig {
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool SystemParametersInfo(uint uiAction, uint uiParam, uint pvParam, uint fWinIni);
+}
+"@
+    }
+    [KeyboardConfig]::SystemParametersInfo(0x0017, 0, 0, 0)  | Out-Null  # SPI_SETKEYBOARDDELAY
+    [KeyboardConfig]::SystemParametersInfo(0x000B, 31, 0, 0) | Out-Null  # SPI_SETKEYBOARDSPEED
 }
 
 # -----------------------------------------------------------------------------
@@ -175,6 +202,24 @@ if ($FULL -and -not $FAST) {
     # Refresh PATH so newly installed tools (AutoHotkey, etc.) are available in this session
     $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
                 [System.Environment]::GetEnvironmentVariable("Path", "User")
+}
+
+# Tell already-running apps to re-read the environment so the new PATH is picked
+# up without a logoff (this session is already refreshed above).
+if (-not $FAST) {
+    if (-not ([System.Management.Automation.PSTypeName]'Win32Env').Type) {
+        Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public class Win32Env {
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+    public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, IntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out IntPtr lpdwResult);
+}
+"@
+    }
+    $HWND_BROADCAST = [IntPtr]0xffff
+    [IntPtr]$res = [IntPtr]::Zero
+    [Win32Env]::SendMessageTimeout($HWND_BROADCAST, 0x001A, [IntPtr]::Zero, "Environment", 2, 5000, [ref]$res) | Out-Null  # WM_SETTINGCHANGE
 }
 
 # -----------------------------------------------------------------------------
