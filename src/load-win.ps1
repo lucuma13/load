@@ -1,5 +1,5 @@
-﻿# Windows workstation setup script
-# Usage: Invoke-WebRequest -Uri "https://raw.githubusercontent.com/lucuma13/load/main/src/load-win.ps1" -UseBasicParsing | Invoke-Expression
+# Windows workstation setup script
+# Usage: Invoke-WebRequest -Uri "https://raw.githubusercontent.com/lucuma13/load/main/src/load-win.ps1" -UseBasicParsing | Set-Content "$env:TEMP\load-win.ps1" -Encoding UTF8; powershell -ExecutionPolicy Bypass -File "$env:TEMP\load-win.ps1"
 # Flags: --full  --fast  --dry-run
 
 $ErrorActionPreference = "Stop"
@@ -10,7 +10,7 @@ New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
 function Mark-Done { param($step); New-Item -ItemType File -Force -Path "$WorkDir\$step" | Out-Null }
 function Is-Done   { param($step); Test-Path "$WorkDir\$step" }
 
-# Get-WorkspaceName <ws_file> — return the workspace display name from the XML file,
+# Get-WorkspaceName <ws_file> - return the workspace display name from the XML file,
 # stored under the UserName key.
 function Get-WorkspaceName {
     param($wsFile)
@@ -19,7 +19,7 @@ function Get-WorkspaceName {
     return ""
 }
 
-# Set-PrefNode <prefs> <node> <value> — replace an XML leaf node's text in place.
+# Set-PrefNode <prefs> <node> <value> - replace an XML leaf node's text in place.
 # Returns $false WITHOUT touching the file when the node is absent, so callers
 # can flag nodes a future Premiere version may have renamed (no edit = no corruption).
 function Set-PrefNode {
@@ -39,16 +39,16 @@ function Set-PrefNode {
     return $true
 }
 
-# Apply-PremierePrefs <prefs> <kys_file> <ws_name> — point Premiere's prefs at
+# Apply-PremierePrefs <prefs> <kys_file> <ws_name> - point Premiere's prefs at
 # the keyboard set + workspace, apply the Classic label preset, enable auto-save
 # every 5 minutes, and turn on the timeline's Link Selection + Display Settings.
 #
 # A missing-node warning can mean one of two things:
-#   (a) Fresh Premiere install — Premiere only writes certain nodes to disk after
+#   (a) Fresh Premiere install - Premiere only writes certain nodes to disk after
 #       a user first manually changes them (confirmed for the 8 timeline display
 #       toggles, which default to true). Warning is harmless; the setting is
 #       already at the correct value.
-#   (b) Adobe renamed the node in this Premiere version — the setting was NOT
+#   (b) Adobe renamed the node in this Premiere version - the setting was NOT
 #       applied and the script needs updating.
 # Either way the file is left untouched for that node.
 function Apply-PremierePrefs {
@@ -93,15 +93,15 @@ function Apply-PremierePrefs {
     }
 
     if ($missing.Count -gt 0) {
-        Write-Host "  ⚠️  Premiere prefs: $($missing.Count) node(s) not found and skipped (file untouched for those nodes):"
+        Write-Host "  [warn] Premiere prefs: $($missing.Count) node(s) not found and skipped (file untouched for those nodes):"
         $missing | ForEach-Object { Write-Host "        - $_" }
         Write-Host "      This is expected on a fresh install (nodes default to the correct value"
         Write-Host "      and are only written by Premiere after a manual change). Otherwise,"
-        Write-Host "      Adobe may have renamed these nodes — check and update the script."
+        Write-Host "      Adobe may have renamed these nodes - check and update the script."
     }
 }
 
-# Set-FileAssociation <ext> <progid> — write a UserChoice entry so Explorer
+# Set-FileAssociation <ext> <progid> - write a UserChoice entry so Explorer
 # treats <progid> as the default handler for <ext>. Windows protects this key
 # with a tamper hash tied to the user SID + current time; we compute it with
 # MD5 and unlock the key's ACL so the write succeeds.
@@ -118,7 +118,7 @@ function Set-FileAssociation {
     $parent = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey(
                   "SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\FileExts\$Extension", $true)
     try {
-        # UserChoice has a restrictive DACL — unlock it so we can delete the key
+        # UserChoice has a restrictive DACL - unlock it so we can delete the key
         $uc = $parent.OpenSubKey("UserChoice",
                   [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree,
                   [System.Security.AccessControl.RegistryRights]::ChangePermissions)
@@ -149,20 +149,19 @@ $FULL    = $args -contains "--full"
 $FAST    = $args -contains "--fast"
 $DRY_RUN = $args -contains "--dry-run"
 
-# No flag given — prompt for the setup type (Fast/Full). Bail if there's no
-# interactive console (e.g. CI) so we don't hang or guess into a heavy install.
+# No flag given - run the Fast pass first (quick config), pause, then run the
+# Full pass (everything). Each pass is its own PowerShell process so flags and
+# exits stay isolated. Bail if there's no interactive console (e.g. CI) so we
+# don't hang or guess into a heavy install.
 if (-not ($FULL -or $FAST -or $DRY_RUN)) {
-    do {
-        try {
-            $reply = Read-Host "  Setup type - [1] Fast (config only)  [2] Full (everything)"
-        } catch {
-            Write-Error "No setup flag given and no interactive console. Pass --fast or --full."
-            exit 1
-        }
-        if     ($reply -in '1','fast','Fast') { $FAST = $true }
-        elseif ($reply -in '2','full','Full') { $FULL = $true }
-        else   { Write-Host "  Please enter 1 or 2." }
-    } while (-not ($FAST -or $FULL))
+    if ((-not $PSCommandPath) -or [System.Console]::IsInputRedirected) {
+        Write-Error "No setup flag given and no interactive console. Pass --fast or --full."
+        exit 1
+    }
+    powershell -ExecutionPolicy Bypass -File $PSCommandPath --fast
+    Read-Host "  Fast loading is complete. Press enter to continue on FULL mode" | Out-Null
+    powershell -ExecutionPolicy Bypass -File $PSCommandPath --full
+    exit $LASTEXITCODE
 }
 
 # -----------------------------------------------------------------------------
@@ -170,7 +169,7 @@ if (-not ($FULL -or $FAST -or $DRY_RUN)) {
 # -----------------------------------------------------------------------------
 
 $PREMIERE_OK      = Test-Path "$HOME\Documents\Adobe\Premiere Pro"
-# Premiere rewrites its prefs on exit — activating a set while it's running would get clobbered.
+# Premiere rewrites its prefs on exit - activating a set while it's running would get clobbered.
 $PREMIERE_RUNNING = $PREMIERE_OK -and ($null -ne (Get-Process -Name "Adobe Premiere Pro*" -ErrorAction SilentlyContinue))
 $WINGET_OK        = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
 $AHK_OK      = Is-Done "ahk"
@@ -202,14 +201,14 @@ Write-Host ""
 # Premiere Pro
 if ($PREMIERE_OK) {
     Would-Run  "Premiere Pro shortcuts & workspace"
-    if ($PREMIERE_RUNNING) { Would-Skip "Premiere Pro preferences — Premiere Pro is open" }
+    if ($PREMIERE_RUNNING) { Would-Skip "Premiere Pro preferences - Premiere Pro is open" }
     else                   { Would-Run  "Premiere Pro preferences" }
     if ($FAST) { Would-Skip "Premiere Pro plugins (--fast)" }
-    else       { Would-Run  "Premiere Pro plugins — Animation Composer, Flicker Free" }
+    else       { Would-Run  "Premiere Pro plugins - Animation Composer, Flicker Free" }
 } else {
-    Would-Skip "Premiere Pro shortcuts & workspace — not installed"
-    Would-Skip "Premiere Pro preferences — not installed"
-    Would-Skip "Premiere Pro plugins — not installed"
+    Would-Skip "Premiere Pro shortcuts & workspace - not installed"
+    Would-Skip "Premiere Pro preferences - not installed"
+    Would-Skip "Premiere Pro plugins - not installed"
 }
 
 # Keyboard preferences
@@ -222,25 +221,25 @@ $CORE_PKGS = @(
     "MediaArea.MediaInfo",
     "MediaArea.MediaInfo.GUI",
     "OliverBetz.ExifTool",
-    "Gyan.FFmpeg",
     "VideoLAN.VLC",
-    "ZhornSoftware.Caffeine"
+    "ZhornSoftware.Caffeine",
+    "Gyan.FFmpeg"
 )
-$FULL_PKGS = @(
+$FULL_PKGS = @(  # Add if needed: "AxiomaticSystems.Bento4", "wez.atomicparsley"
     "AutoHotkey.AutoHotkey",
-    "AtomicParsley.AtomicParsley",
-    "Bento4.Bento4",
-    "ImageMagick.ImageMagick",
     "Google.Chrome",
-    "Audacity.Audacity",
-    "Adobe.Acrobat.Reader.64-bit"
+    "Adobe.Acrobat.Reader.64-bit",
+    "Audacity.Audacity"
 )
-$CORE_UV = @("triplecheck")
+$CORE_UV = @(
+    "triplecheck",
+    "mhl-suite"
+)
 
 if ($FAST) {
     $all = $CORE_PKGS + $CORE_UV
     if ($FULL) { $all += $FULL_PKGS }
-    Would-Skip ("managed packages (--fast) — " + ($all -join ", "))
+    Would-Skip ("managed packages (--fast) - " + ($all -join ", "))
 } else {
     $PKG_LIST = $CORE_PKGS
     if ($FULL) { $PKG_LIST += $FULL_PKGS }
@@ -259,7 +258,7 @@ if ($FAST) {
 
 # VLC as default video player
 if ($VLC_IS_DEFAULT)                           { Already-Done "VLC as default video player" }
-elseif ($FAST -and -not (Test-Path $VLC_EXE)) { Would-Skip   "VLC as default video player — VLC not installed" }
+elseif ($FAST -and -not (Test-Path $VLC_EXE)) { Would-Skip   "VLC as default video player - VLC not installed" }
 else                                           { Would-Run    "VLC as default video player" }
 
 # AHK shortcuts
@@ -275,7 +274,7 @@ Write-Host ""
 if ($DRY_RUN) { exit 0 }
 
 # The lightweight config below runs before any slow download/install so that an
-# interrupted run still leaves the quick changes applied. AHK is the exception —
+# interrupted run still leaves the quick changes applied. AHK is the exception -
 # it needs AutoHotkey (a managed package), so it follows the package install.
 
 # -----------------------------------------------------------------------------
@@ -301,7 +300,7 @@ if ($PREMIERE_OK) {
         $wsName = Get-WorkspaceName (Join-Path $layouts $WS_FILE)
 
         if ($PREMIERE_RUNNING) {
-            Write-Host "  ⚠️  Premiere Pro is running — files dropped but not activated"
+            Write-Host "  [warn] Premiere Pro is running - files dropped but not activated"
         } elseif (Test-Path $prefs) {
             Apply-PremierePrefs $prefs $KYS_FILE $wsName
         }
@@ -387,11 +386,22 @@ if (-not $AHK_OK -and -not $FAST) {
     if (-not $ahkExe) {
         $ahkExe = @(
             "$env:ProgramFiles\AutoHotkey\v2\AutoHotkey64.exe",
-            "$env:ProgramFiles\AutoHotkey\v2\AutoHotkey32.exe"
+            "$env:ProgramFiles\AutoHotkey\v2\AutoHotkey32.exe",
+            "$env:ProgramFiles\AutoHotkey\AutoHotkey64.exe",
+            "$env:ProgramFiles\AutoHotkey\AutoHotkey.exe",
+            "${env:ProgramFiles(x86)}\AutoHotkey\v2\AutoHotkey64.exe",
+            "${env:ProgramFiles(x86)}\AutoHotkey\AutoHotkey.exe"
         ) | Where-Object { Test-Path $_ } | Select-Object -First 1
     }
     if (-not $ahkExe) {
-        Write-Host "  ⚠️  AutoHotkey not found — skipping AHK shortcuts"
+        # Last resort: the winget install layout varies by version - search the tree
+        # and prefer the 64-bit interpreter over the launcher.
+        $ahkExe = Get-ChildItem "$env:ProgramFiles\AutoHotkey" -Recurse -Filter "AutoHotkey*.exe" -ErrorAction SilentlyContinue |
+                  Sort-Object { $_.Name -notmatch '64' } |
+                  Select-Object -First 1 -ExpandProperty FullName
+    }
+    if (-not $ahkExe) {
+        Write-Host "  [warn] AutoHotkey not found - skipping AHK shortcuts"
     } else {
         $ahkPath = "$WorkDir\MacKeyboard_LM.ahk"
         curl.exe -s -o $ahkPath "https://raw.githubusercontent.com/lucuma13/load/refs/heads/main/src/data/MacKeyboard_LM.ahk"
@@ -411,16 +421,25 @@ if (-not $AHK_OK -and -not $FAST) {
 if ($PREMIERE_OK -and -not $FAST) {
     $pmPath = "$WorkDir\MisterHorseProductManager.msi"
     curl.exe -fsSL -o $pmPath "https://misterhorse.com/downloads/product-manager/win"
-    Start-Process msiexec.exe -ArgumentList "/i `"$pmPath`" /qn" -Verb RunAs -Wait
+    $pm = Start-Process msiexec.exe -ArgumentList "/i `"$pmPath`" /qn" -Verb RunAs -Wait -PassThru
+    # Clean up the installer once it finished successfully (exit 0).
+    if ($pm.ExitCode -eq 0) { Remove-Item $pmPath -Force -ErrorAction SilentlyContinue }
 
-    # Flicker Free — Digital Anarchy's deflicker plugin. The download is a zip
+    # Flicker Free - Digital Anarchy's deflicker plugin. The download is a zip
     # wrapping the installer .exe; we extract it and run the installer.
     $ffZip = "$WorkDir\flickerfree_229_AE.zip"
     $ffDir = "$WorkDir\flickerfree_229_AE"
     curl.exe -fsSL -o $ffZip "https://www.digitalanarchy.com/downloads/flickerfree_229_AE.zip"
     Expand-Archive -Path $ffZip -DestinationPath $ffDir -Force
     $ffExe = Get-ChildItem $ffDir -Filter *.exe | Select-Object -First 1
-    if ($ffExe) { Start-Process $ffExe.FullName -Verb RunAs -Wait }
+    if ($ffExe) {
+        $ff = Start-Process $ffExe.FullName -Verb RunAs -Wait -PassThru
+        # Clean up the zip and extracted installer once it finished successfully.
+        if ($ff.ExitCode -eq 0) {
+            Remove-Item $ffZip -Force -ErrorAction SilentlyContinue
+            Remove-Item $ffDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 # -----------------------------------------------------------------------------
@@ -442,16 +461,8 @@ if (-not $FAST) {
             }
         }
     } catch {
-        Write-Host "  ⚠️  Could not fetch LUTs: $_"
+        Write-Host "  [warn] Could not fetch LUTs: $_"
     }
-}
-
-# -----------------------------------------------------------------------------
-# Upgrade everything winget manages to the latest version
-# -----------------------------------------------------------------------------
-
-if (-not $FAST -and $WINGET_OK) {
-    winget upgrade --all --include-unknown --accept-package-agreements --accept-source-agreements
 }
 
 # -----------------------------------------------------------------------------

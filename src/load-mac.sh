@@ -236,9 +236,9 @@ fi
 # Managed packages
 CORE_FORMULAE="media-info exiftool ffmpeg uv"
 CORE_CASKS="vlc caffeine mediainfo"
-CORE_UV="triplecheck"
-FULL_FORMULAE="atomicparsley bento4 wget git"
-FULL_CASKS="google-chrome mediahuman-audio-converter audacity appcleaner"
+CORE_UV="triplecheck mhl-suite"
+FULL_FORMULAE="git"  # add these if needed: atomicparsley, bento4, wget
+FULL_CASKS="google-chrome adobe-acrobat-reader audacity mediahuman-audio-converter appcleaner"
 
 if $FAST; then
   ALL_PKGS="$CORE_FORMULAE $CORE_CASKS $CORE_UV"

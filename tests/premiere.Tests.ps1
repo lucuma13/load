@@ -96,7 +96,49 @@ Describe "Apply-PremierePrefs (Premiere 25.0)" {
 
 Describe "Get-WorkspaceName" {
     It "extracts the UserName" {
-        $ws = "$PSScriptRoot\fixtures\premiere_pro_v25.0\UserWorkspace_truncated.xml"
+        $ws = "$PSScriptRoot/fixtures/premiere_pro_v25.0/UserWorkspace_truncated.xml"
         Get-WorkspaceName $ws | Should -Be 'LGG - Single monitor'
+    }
+}
+
+# The script is downloaded and run by Windows PowerShell 5.1, which garbles a
+# UTF-8 BOM and non-ASCII bytes into '?' (a stray BOM once broke line 1 with
+# "The term '???#' is not recognized"). Keep the distributed script pure ASCII.
+Describe "load-win.ps1 encoding (Windows PowerShell 5.1 safe)" {
+    BeforeAll {
+        $script:scriptBytes = [System.IO.File]::ReadAllBytes("$PSScriptRoot/../src/load-win.ps1")
+    }
+
+    It "has no byte-order mark" {
+        $hasBom = $scriptBytes.Length -ge 3 -and
+                  $scriptBytes[0] -eq 0xEF -and $scriptBytes[1] -eq 0xBB -and $scriptBytes[2] -eq 0xBF
+        $hasBom | Should -BeFalse
+    }
+
+    It "is pure ASCII (no bytes that garble in legacy PowerShell)" {
+        $offenders = for ($i = 0; $i -lt $scriptBytes.Length; $i++) {
+            if ($scriptBytes[$i] -gt 0x7F) { $i }
+        }
+        @($offenders).Count | Should -Be 0 -Because "non-ASCII byte(s) at offset(s): $($offenders -join ', ')"
+    }
+}
+
+# These hit the network to confirm the hard-coded plugin installer URLs (not
+# winget-managed, so nothing else validates them) are still live. Exclude them
+# on an offline run with:  Invoke-Pester -ExcludeTag Live
+Describe "Plugin download links" -Tag 'Live' {
+    $links = @(
+        @{ Name = 'Mister Horse Product Manager'; Url = 'https://misterhorse.com/downloads/product-manager/win' }
+        @{ Name = 'Flicker Free';                 Url = 'https://www.digitalanarchy.com/downloads/flickerfree_229_AE.zip' }
+    )
+
+    It "<Name> link is live" -ForEach $links {
+        try {
+            $resp = Invoke-WebRequest -Uri $Url -Method Head -MaximumRedirection 5 -UseBasicParsing -TimeoutSec 30
+        } catch {
+            # Some servers reject HEAD - fall back to a 1-byte ranged GET.
+            $resp = Invoke-WebRequest -Uri $Url -Headers @{ Range = 'bytes=0-0' } -MaximumRedirection 5 -UseBasicParsing -TimeoutSec 30
+        }
+        [int]$resp.StatusCode | Should -BeIn @(200, 206)
     }
 }
