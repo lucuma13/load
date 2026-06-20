@@ -1,14 +1,145 @@
-# Windows workstation setup script
+﻿# Windows workstation setup script
 # Usage: Invoke-WebRequest -Uri "https://raw.githubusercontent.com/lucuma13/load/main/src/load-win.ps1" -UseBasicParsing | Invoke-Expression
 # Flags: --full  --fast  --dry-run
 
 $ErrorActionPreference = "Stop"
 
-$ProgressDir = "$HOME\.win_setup"
-New-Item -ItemType Directory -Force -Path $ProgressDir | Out-Null
+$WorkDir = "$HOME\Downloads\load-win"
+New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
 
-function Mark-Done { param($step); New-Item -ItemType File -Force -Path "$ProgressDir\$step" | Out-Null }
-function Is-Done   { param($step); Test-Path "$ProgressDir\$step" }
+function Mark-Done { param($step); New-Item -ItemType File -Force -Path "$WorkDir\$step" | Out-Null }
+function Is-Done   { param($step); Test-Path "$WorkDir\$step" }
+
+# Get-WorkspaceName <ws_file> — return the workspace display name from the XML file,
+# stored under the UserName key.
+function Get-WorkspaceName {
+    param($wsFile)
+    $content = [System.IO.File]::ReadAllText($wsFile)
+    if ($content -match '<key>UserName</key>\s*<ustring>(.*?)</ustring>') { return $Matches[1] }
+    return ""
+}
+
+# Set-PrefNode <prefs> <node> <value> — replace an XML leaf node's text in place.
+# Returns $false WITHOUT touching the file when the node is absent, so callers
+# can flag nodes a future Premiere version may have renamed (no edit = no corruption).
+function Set-PrefNode {
+    param($prefs, $node, $value)
+    $bytes = [System.IO.File]::ReadAllBytes($prefs)
+    if     ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE) { $enc = [System.Text.Encoding]::Unicode }
+    elseif ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFE -and $bytes[1] -eq 0xFF) { $enc = [System.Text.Encoding]::BigEndianUnicode }
+    else                                                                            { $enc = [System.Text.Encoding]::UTF8 }
+    $content  = $enc.GetString($bytes)
+    $open     = "<$node>"
+    $close    = "</$node>"
+    $idx      = $content.IndexOf($open)
+    if ($idx -lt 0) { return $false }
+    $closeIdx = $content.IndexOf($close, $idx + $open.Length)
+    $new = $content.Substring(0, $idx + $open.Length) + $value + $content.Substring($closeIdx)
+    [System.IO.File]::WriteAllBytes($prefs, $enc.GetBytes($new))
+    return $true
+}
+
+# Apply-PremierePrefs <prefs> <kys_file> <ws_name> — point Premiere's prefs at
+# the keyboard set + workspace, apply the Classic label preset, enable auto-save
+# every 5 minutes, and turn on the timeline's Link Selection + Display Settings.
+#
+# A missing-node warning can mean one of two things:
+#   (a) Fresh Premiere install — Premiere only writes certain nodes to disk after
+#       a user first manually changes them (confirmed for the 8 timeline display
+#       toggles, which default to true). Warning is harmless; the setting is
+#       already at the correct value.
+#   (b) Adobe renamed the node in this Premiere version — the setting was NOT
+#       applied and the script needs updating.
+# Either way the file is left untouched for that node.
+function Apply-PremierePrefs {
+    param($prefs, $kysFile, $wsName)
+    $labelNames  = @('Violet','Iris','Caribbean','Lavender','Cerulean','Forest','Rose','Mango','Purple','Blue','Teal','Magenta','Tan','Green','Brown','Yellow')
+    $labelColors = @('14717094','13408882','10016297','14910691','14597935','5814353','10776567','3909357','9896087','16727100','8421376','15151847','9814478','2191389','1262987','6611682')
+    $missing = @()
+
+    # Keyboard set
+    if (-not (Set-PrefNode $prefs "FE.Prefs.Shortcuts.Filename" $kysFile)) { $missing += "FE.Prefs.Shortcuts.Filename" }
+
+    # Active workspace
+    if ($wsName) {
+        if (-not (Set-PrefNode $prefs "FE.Application.LastWorkspaceName" $wsName)) { $missing += "FE.Application.LastWorkspaceName" }
+    }
+
+    # Classic label preset (names + colours + preset marker)
+    for ($i = 0; $i -lt $labelNames.Count; $i++) {
+        if (-not (Set-PrefNode $prefs "BE.Prefs.LabelNames.$i"  $labelNames[$i]))  { $missing += "BE.Prefs.LabelNames.$i" }
+        if (-not (Set-PrefNode $prefs "BE.Prefs.LabelColors.$i" $labelColors[$i])) { $missing += "BE.Prefs.LabelColors.$i" }
+    }
+    if (-not (Set-PrefNode $prefs "PPro.LabelColorPresets.RecentPreset" '{"builtIn":true,"name":"Classic"}')) { $missing += "PPro.LabelColorPresets.RecentPreset" }
+
+    # Auto-save: on, every 5 minutes
+    if (-not (Set-PrefNode $prefs "BE.Prefs.AutoSave.DoSave"   "true")) { $missing += "BE.Prefs.AutoSave.DoSave" }
+    if (-not (Set-PrefNode $prefs "BE.Prefs.AutoSave.Interval" "5"))    { $missing += "BE.Prefs.AutoSave.Interval" }
+    Set-PrefNode $prefs "BE.Prefs.AutoSave.Interval" "5"    | Out-Null
+
+    # Timeline toggles: Link Selection + Display Settings (wrench menu)
+    foreach ($node in @(
+        'TL.PREFLinkedSelectionState',
+        'be.Prefs.Timeline.Show.Video.Thumbnails',
+        'be.Prefs.Timeline.Show.Video.Names',
+        'be.Prefs.Timeline.Show.Audio.Waveforms',
+        'be.Prefs.Timeline.Show.Audio.Names',
+        'be.Prefs.Timeline.Show.Proxy.Badges',
+        'TL.PREFShowFXBadges',
+        'TL.PREFShowThroughEditsState',
+        'MZ.SQShowDuplicateMarkers'
+    )) {
+        if (-not (Set-PrefNode $prefs $node "true")) { $missing += $node }
+    }
+
+    if ($missing.Count -gt 0) {
+        Write-Host "  ⚠️  Premiere prefs: $($missing.Count) node(s) not found and skipped (file untouched for those nodes):"
+        $missing | ForEach-Object { Write-Host "        - $_" }
+        Write-Host "      This is expected on a fresh install (nodes default to the correct value"
+        Write-Host "      and are only written by Premiere after a manual change). Otherwise,"
+        Write-Host "      Adobe may have renamed these nodes — check and update the script."
+    }
+}
+
+# Set-FileAssociation <ext> <progid> — write a UserChoice entry so Explorer
+# treats <progid> as the default handler for <ext>. Windows protects this key
+# with a tamper hash tied to the user SID + current time; we compute it with
+# MD5 and unlock the key's ACL so the write succeeds.
+function Set-FileAssociation {
+    param($Extension, $ProgId)
+    $sid  = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $sub  = "software\microsoft\windows\currentversion\explorer\fileexts\$Extension\userchoice"
+    $ft   = [long][math]::Floor([datetime]::UtcNow.ToFileTime() / 10000000) * 10000000
+    $data = [System.Text.Encoding]::Unicode.GetBytes(
+                $sub + $sid.ToLower() + $ProgId.ToLower() + $ft.ToString('x') +
+                "user choice set via windows user experience {d18b6dd5-6124-4341-9318-804003bafa0b}")
+    $hash = [Convert]::ToBase64String([Security.Cryptography.MD5]::Create().ComputeHash($data))
+
+    $parent = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey(
+                  "SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\FileExts\$Extension", $true)
+    try {
+        # UserChoice has a restrictive DACL — unlock it so we can delete the key
+        $uc = $parent.OpenSubKey("UserChoice",
+                  [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree,
+                  [System.Security.AccessControl.RegistryRights]::ChangePermissions)
+        if ($uc) {
+            $acl = $uc.GetAccessControl()
+            $acl.SetAccessRule((New-Object System.Security.AccessControl.RegistryAccessRule(
+                [System.Security.Principal.WindowsIdentity]::GetCurrent().Name, 'FullControl', 'Allow')))
+            $uc.SetAccessControl($acl)
+            $uc.Close()
+        }
+        $parent.DeleteSubKey("UserChoice", $false)
+    } catch {}
+    $uc = $parent.CreateSubKey("UserChoice")
+    $uc.SetValue("ProgId", $ProgId)
+    $uc.SetValue("Hash",   $hash)
+    $uc.Close()
+    $parent.Close()
+}
+
+# Sourced as a library (tests set $env:LOAD_LIB): stop here, run nothing below.
+if ($env:LOAD_LIB) { return }
 
 # -----------------------------------------------------------------------------
 # Flags
@@ -21,12 +152,13 @@ $DRY_RUN = $args -contains "--dry-run"
 # No flag given — prompt for the setup type (Fast/Full). Bail if there's no
 # interactive console (e.g. CI) so we don't hang or guess into a heavy install.
 if (-not ($FULL -or $FAST -or $DRY_RUN)) {
-    if (-not [Environment]::UserInteractive) {
-        Write-Error "No setup flag given and no interactive console. Pass --fast or --full."
-        exit 1
-    }
     do {
-        $reply = Read-Host "  Setup type - [1] Fast (config only)  [2] Full (everything)"
+        try {
+            $reply = Read-Host "  Setup type - [1] Fast (config only)  [2] Full (everything)"
+        } catch {
+            Write-Error "No setup flag given and no interactive console. Pass --fast or --full."
+            exit 1
+        }
         if     ($reply -in '1','fast','Fast') { $FAST = $true }
         elseif ($reply -in '2','full','Full') { $FULL = $true }
         else   { Write-Host "  Please enter 1 or 2." }
@@ -37,13 +169,18 @@ if (-not ($FULL -or $FAST -or $DRY_RUN)) {
 # Preflight
 # -----------------------------------------------------------------------------
 
-$PREMIERE_OK = Test-Path "$HOME\Documents\Adobe\Premiere Pro"
-$WINGET_OK   = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
+$PREMIERE_OK      = Test-Path "$HOME\Documents\Adobe\Premiere Pro"
+# Premiere rewrites its prefs on exit — activating a set while it's running would get clobbered.
+$PREMIERE_RUNNING = $PREMIERE_OK -and ($null -ne (Get-Process -Name "Adobe Premiere Pro*" -ErrorAction SilentlyContinue))
+$WINGET_OK        = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
 $AHK_OK      = Is-Done "ahk"
 
 $KB_Speed = (Get-ItemProperty -Path "HKCU:\Control Panel\Keyboard" -Name "KeyboardSpeed" -ErrorAction SilentlyContinue).KeyboardSpeed
 $KB_Delay = (Get-ItemProperty -Path "HKCU:\Control Panel\Keyboard" -Name "KeyboardDelay" -ErrorAction SilentlyContinue).KeyboardDelay
 $KB_OK    = ($KB_Speed -eq "31") -and ($KB_Delay -eq "0")
+
+$VLC_EXE        = "$env:ProgramFiles\VideoLAN\VLC\vlc.exe"
+$VLC_IS_DEFAULT = (Get-ItemProperty "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.mp4\UserChoice" -ErrorAction SilentlyContinue).ProgId -eq 'VLC.mp4'
 
 function winget_installed($id) {
     if (-not $WINGET_OK) { return $false }
@@ -53,7 +190,7 @@ function winget_installed($id) {
 
 function uv_installed($pkg) {
     if (-not (Get-Command uv -ErrorAction SilentlyContinue)) { return $false }
-    return (uv tool list 2>$null) -match "^$pkg"
+    return [bool]((uv tool list 2>$null) -match "^$pkg")
 }
 
 function Would-Run  { param($msg); Write-Host "  [run]   $msg" }
@@ -62,16 +199,17 @@ function Already-Done { param($msg); Write-Host "  [done]  $msg" }
 
 Write-Host ""
 
-# Premiere shortcuts & workspace
+# Premiere Pro
 if ($PREMIERE_OK) {
-    Would-Run  "Premiere shortcuts"
-    Would-Run  "Premiere workspace"
-    if ($FAST) { Would-Skip "Premiere plugins (--fast)" }
-    else       { Would-Run  "Premiere plugins — Animation Composer, Flicker Free" }
+    Would-Run  "Premiere Pro shortcuts & workspace"
+    if ($PREMIERE_RUNNING) { Would-Skip "Premiere Pro preferences — Premiere Pro is open" }
+    else                   { Would-Run  "Premiere Pro preferences" }
+    if ($FAST) { Would-Skip "Premiere Pro plugins (--fast)" }
+    else       { Would-Run  "Premiere Pro plugins — Animation Composer, Flicker Free" }
 } else {
-    Would-Skip "Premiere shortcuts — not installed"
-    Would-Skip "Premiere workspace — not installed"
-    Would-Skip "Premiere plugins — not installed"
+    Would-Skip "Premiere Pro shortcuts & workspace — not installed"
+    Would-Skip "Premiere Pro preferences — not installed"
+    Would-Skip "Premiere Pro plugins — not installed"
 }
 
 # Keyboard preferences
@@ -94,7 +232,8 @@ $FULL_PKGS = @(
     "Bento4.Bento4",
     "ImageMagick.ImageMagick",
     "Google.Chrome",
-    "Audacity.Audacity"
+    "Audacity.Audacity",
+    "Adobe.Acrobat.Reader.64-bit"
 )
 $CORE_UV = @("triplecheck")
 
@@ -118,6 +257,11 @@ if ($FAST) {
     if ($pkgs_todo.Count -gt 0) { Would-Run ("install managed packages: " + ($pkgs_todo -join ", ")) }
 }
 
+# VLC as default video player
+if ($VLC_IS_DEFAULT)                           { Already-Done "VLC as default video player" }
+elseif ($FAST -and -not (Test-Path $VLC_EXE)) { Would-Skip   "VLC as default video player — VLC not installed" }
+else                                           { Would-Run    "VLC as default video player" }
+
 # AHK shortcuts
 if ($AHK_OK)   { Already-Done "AHK shortcuts" }
 elseif ($FAST) { Would-Skip   "AHK shortcuts (--fast)" }
@@ -139,16 +283,28 @@ if ($DRY_RUN) { exit 0 }
 # -----------------------------------------------------------------------------
 
 if ($PREMIERE_OK) {
-    # Drop the shortcuts into each Profile's Win folder (where Premiere reads custom sets)
-    foreach ($winDir in Get-ChildItem "$HOME\Documents\Adobe\Premiere Pro\*\Profile-*\Win" -Directory -ErrorAction SilentlyContinue) {
-        curl.exe -s --output-dir "$($winDir.FullName)" -O "https://raw.githubusercontent.com/lucuma13/load/refs/heads/main/src/data/Luis_Mengo_25.1_WINDOWS.kys"
-    }
+    $KYS_FILE = "Luis_Mengo_25.1_WINDOWS.kys"
+    $WS_FILE  = "UserWorkspace_LGG.xml"
 
-    # Drop the workspace into every Profile's Layouts folder (any version, any Profile)
     foreach ($profileDir in Get-ChildItem "$HOME\Documents\Adobe\Premiere Pro\*\Profile-*" -Directory -ErrorAction SilentlyContinue) {
+        $prefs   = Join-Path $profileDir.FullName "Adobe Premiere Pro Prefs"
+        $winDir  = Join-Path $profileDir.FullName "Win"
         $layouts = Join-Path $profileDir.FullName "Layouts"
+
+        New-Item -ItemType Directory -Force -Path $winDir  | Out-Null
         New-Item -ItemType Directory -Force -Path $layouts | Out-Null
-        curl.exe -s --output-dir "$layouts" -O "https://raw.githubusercontent.com/lucuma13/load/refs/heads/main/src/data/UserWorkspace_LGG.xml"
+
+        # Drop the shortcuts into the Profile's Win folder (where Premiere reads custom sets)
+        curl.exe -s --output-dir $winDir  -O "https://raw.githubusercontent.com/lucuma13/load/refs/heads/main/src/data/$KYS_FILE"
+        # Drop the workspace into Layouts. Premiere auto-registers it on launch.
+        curl.exe -s --output-dir $layouts -O "https://raw.githubusercontent.com/lucuma13/load/refs/heads/main/src/data/$WS_FILE"
+        $wsName = Get-WorkspaceName (Join-Path $layouts $WS_FILE)
+
+        if ($PREMIERE_RUNNING) {
+            Write-Host "  ⚠️  Premiere Pro is running — files dropped but not activated"
+        } elseif (Test-Path $prefs) {
+            Apply-PremierePrefs $prefs $KYS_FILE $wsName
+        }
     }
 }
 
@@ -237,7 +393,7 @@ if (-not $AHK_OK -and -not $FAST) {
     if (-not $ahkExe) {
         Write-Host "  ⚠️  AutoHotkey not found — skipping AHK shortcuts"
     } else {
-        $ahkPath = "$HOME\Downloads\MacKeyboard_LM.ahk"
+        $ahkPath = "$WorkDir\MacKeyboard_LM.ahk"
         curl.exe -s -o $ahkPath "https://raw.githubusercontent.com/lucuma13/load/refs/heads/main/src/data/MacKeyboard_LM.ahk"
         Start-Process $ahkExe -ArgumentList $ahkPath -Verb RunAs
         Mark-Done "ahk"
@@ -253,14 +409,14 @@ if (-not $AHK_OK -and -not $FAST) {
 # Composer itself is then installed from within the app on first launch.
 
 if ($PREMIERE_OK -and -not $FAST) {
-    $pmPath = "$HOME\Downloads\MisterHorseProductManager.msi"
+    $pmPath = "$WorkDir\MisterHorseProductManager.msi"
     curl.exe -fsSL -o $pmPath "https://misterhorse.com/downloads/product-manager/win"
     Start-Process msiexec.exe -ArgumentList "/i `"$pmPath`" /qn" -Verb RunAs -Wait
 
     # Flicker Free — Digital Anarchy's deflicker plugin. The download is a zip
     # wrapping the installer .exe; we extract it and run the installer.
-    $ffZip = "$HOME\Downloads\flickerfree_229_AE.zip"
-    $ffDir = "$HOME\Downloads\flickerfree_229_AE"
+    $ffZip = "$WorkDir\flickerfree_229_AE.zip"
+    $ffDir = "$WorkDir\flickerfree_229_AE"
     curl.exe -fsSL -o $ffZip "https://www.digitalanarchy.com/downloads/flickerfree_229_AE.zip"
     Expand-Archive -Path $ffZip -DestinationPath $ffDir -Force
     $ffExe = Get-ChildItem $ffDir -Filter *.exe | Select-Object -First 1
@@ -270,12 +426,12 @@ if ($PREMIERE_OK -and -not $FAST) {
 # -----------------------------------------------------------------------------
 # LUTs
 # -----------------------------------------------------------------------------
-# Download every LUT in src/data/LUTs into ~\Downloads\LUTs (skipped --fast).
+# Download every LUT in src/data/LUTs into $WorkDir\LUTs (skipped --fast).
 # The file list comes from the GitHub contents API, so new LUTs are picked up
 # automatically without editing this script.
 
 if (-not $FAST) {
-    $lutDir = "$HOME\Downloads\LUTs"
+    $lutDir = "$WorkDir\LUTs"
     $lutApi = "https://api.github.com/repos/lucuma13/load/contents/src/data/LUTs?ref=main"
     New-Item -ItemType Directory -Force -Path $lutDir | Out-Null
     try {

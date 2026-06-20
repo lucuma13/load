@@ -192,8 +192,11 @@ fi
 # Preflight
 # -----------------------------------------------------------------------------
 
-PREMIERE_OK=false;   ls "$HOME/Documents/Adobe/Premiere Pro"/*/Profile-*/Mac &>/dev/null 2>&1          && PREMIERE_OK=true
-BREW_OK=false;       command -v brew &>/dev/null                                                         && BREW_OK=true
+PREMIERE_OK=false;      ls "$HOME/Documents/Adobe/Premiere Pro"/*/Profile-*/Mac &>/dev/null 2>&1 && PREMIERE_OK=true
+# Premiere rewrites its prefs on exit — activating a set while it's running would get clobbered.
+# Match the process name (version-agnostic) rather than full args, which would hit our own perl call.
+PREMIERE_RUNNING=false; $PREMIERE_OK && pgrep "Adobe Premiere Pro" &>/dev/null 2>&1             && PREMIERE_RUNNING=true
+BREW_OK=false;          command -v brew &>/dev/null                                              && BREW_OK=true
 PVF_OK=false
 { [ -d "/Library/Apple/System/Library/CoreServices/ProVideoFormats.bundle" ] || \
   pkgutil --pkg-info com.apple.pkg.ProVideoFormats &>/dev/null 2>&1; } && PVF_OK=true
@@ -201,18 +204,19 @@ SCRATCH="$(ls -d /Volumes/SCRATCH* 2>/dev/null | head -1 || true)"
 
 echo ""
 
-# Premiere shortcuts & workspace
+# Premiere Pro
 if $PREMIERE_OK; then
-  would_run  "Premiere shortcuts"
-  would_run  "Premiere workspace"
+  would_run  "Premiere Pro shortcuts & workspace"
+  if $PREMIERE_RUNNING; then would_skip "Premiere Pro preferences — Premiere Pro is open"
+  else                       would_run  "Premiere Pro preferences"; fi
   if [ -n "$SCRATCH" ]; then would_run  "Premiere media cache → $SCRATCH/Cache"
   else                       would_skip "Premiere media cache — no SCRATCH drive"; fi
-  if $FAST; then would_skip "Premiere plugins (--fast)"
-  else           would_run  "Premiere plugins — Animation Composer, Flicker Free"; fi
+  if $FAST; then would_skip "Premiere Pro plugins (--fast)"
+  else           would_run  "Premiere Pro plugins — Animation Composer, Flicker Free"; fi
 else
-  would_skip "Premiere shortcuts — not installed"
-  would_skip "Premiere workspace — not installed"
-  would_skip "Premiere plugins — not installed"
+  would_skip "Premiere Pro shortcuts & workspace — not installed"
+  would_skip "Premiere Pro preferences — not installed"
+  would_skip "Premiere Pro plugins — not installed"
 fi
 
 # System / Finder / TextEdit — always run
@@ -325,12 +329,6 @@ killall TextEdit 2>/dev/null || true
 if $PREMIERE_OK; then
   KYS_FILE="Luis_Mengo_25.1.kys"
   WS_FILE="UserWorkspace_LGG.xml"
-
-  # Premiere rewrites its prefs on exit, so activating a set while it's running
-  # would get clobbered. Match the process name (version-agnostic, e.g. "Adobe
-  # Premiere Pro 2026") rather than full args, which would hit our own perl call.
-  PREMIERE_RUNNING=false
-  pgrep "Adobe Premiere Pro" &>/dev/null 2>&1 && PREMIERE_RUNNING=true
 
   for profile in "$HOME/Documents/Adobe/Premiere Pro"/*/Profile-*/; do
     [ -d "$profile" ] || continue
