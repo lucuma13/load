@@ -1,8 +1,8 @@
 ## 🚗 Auto Set Up Workstation
 
-Run the line for your OS. With no flag it prompts for the setup type — **Fast**
-(config only) or **Full** (everything). Append `--fast` or `--full` to skip the
-prompt (`--dry-run` previews without changing anything).
+Run the line for your OS. With no flag it runs **Fast** (config only) first, then
+pauses and continues into **Full** (everything) on a keypress. Append `--fast` or
+`--full` to run just one (`--dry-run` previews without changing anything).
 
 * macOS
 ```bash
@@ -11,7 +11,12 @@ curl -fsSL https://raw.githubusercontent.com/lucuma13/load/main/src/load-mac.sh 
 
 * Windows (PowerShell):
 ```powershell
-Invoke-WebRequest -Uri "https://raw.githubusercontent.com/lucuma13/load/main/src/load-win.ps1" -UseBasicParsing | Set-Content "$env:TEMP\load-win.ps1" -Encoding UTF8; powershell -ExecutionPolicy Bypass -File "$env:TEMP\load-win.ps1"
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/lucuma13/load/main/src/load-win.ps1" -UseBasicParsing | Invoke-Expression
+```
+
+  Fast only (passing a flag needs the `-File` form, since `iex` can't take args):
+```powershell
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/lucuma13/load/main/src/load-win.ps1" -UseBasicParsing | Set-Content "$env:TEMP\load-win.ps1" -Encoding UTF8; powershell -ExecutionPolicy Bypass -File "$env:TEMP\load-win.ps1" --fast
 ```
 
 

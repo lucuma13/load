@@ -1,5 +1,5 @@
 # Windows workstation setup script
-# Usage: Invoke-WebRequest -Uri "https://raw.githubusercontent.com/lucuma13/load/main/src/load-win.ps1" -UseBasicParsing | Set-Content "$env:TEMP\load-win.ps1" -Encoding UTF8; powershell -ExecutionPolicy Bypass -File "$env:TEMP\load-win.ps1"
+# Usage: Invoke-WebRequest -Uri "https://raw.githubusercontent.com/lucuma13/load/main/src/load-win.ps1" -UseBasicParsing | Invoke-Expression
 # Flags: --full  --fast  --dry-run
 
 $ErrorActionPreference = "Stop"
@@ -149,19 +149,18 @@ $FULL    = $args -contains "--full"
 $FAST    = $args -contains "--fast"
 $DRY_RUN = $args -contains "--dry-run"
 
-# No flag given - run the Fast pass first (quick config), pause, then run the
-# Full pass (everything). Each pass is its own PowerShell process so flags and
-# exits stay isolated. Bail if there's no interactive console (e.g. CI) so we
-# don't hang or guess into a heavy install.
+# No flag given - run the Fast pass inline now (quick config, nothing saved to
+# disk), then pause and hand off to the Full pass (see the Done section, which
+# only then downloads the script to a temp file). Bail if there's no interactive
+# console (e.g. CI) so we don't run a heavy install on an unattended box.
+$AUTO = $false
 if (-not ($FULL -or $FAST -or $DRY_RUN)) {
-    if ((-not $PSCommandPath) -or [System.Console]::IsInputRedirected) {
+    if ([System.Console]::IsInputRedirected) {
         Write-Error "No setup flag given and no interactive console. Pass --fast or --full."
         exit 1
     }
-    powershell -ExecutionPolicy Bypass -File $PSCommandPath --fast
-    Read-Host "  Fast loading is complete. Press enter to continue on FULL mode" | Out-Null
-    powershell -ExecutionPolicy Bypass -File $PSCommandPath --full
-    exit $LASTEXITCODE
+    $AUTO = $true
+    $FAST = $true
 }
 
 # -----------------------------------------------------------------------------
@@ -468,6 +467,17 @@ if (-not $FAST) {
 # -----------------------------------------------------------------------------
 # Done
 # -----------------------------------------------------------------------------
+
+if ($AUTO) {
+    # Fast pass finished. Only now save the script to a temp file - so nothing is
+    # left on disk if the user stops here - and run the Full pass from it.
+    Read-Host "  Fast loading is complete. Press enter to continue on FULL mode" | Out-Null
+    $self = "$env:TEMP\load-win.ps1"
+    Invoke-WebRequest -Uri "https://raw.githubusercontent.com/lucuma13/load/main/src/load-win.ps1" -UseBasicParsing |
+        Set-Content $self -Encoding UTF8
+    powershell -ExecutionPolicy Bypass -File $self --full
+    exit $LASTEXITCODE
+}
 
 Write-Host ""
 Write-Host "  You're ready to roll!"
