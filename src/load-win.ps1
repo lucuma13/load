@@ -16,8 +16,9 @@ $ErrorActionPreference = "Stop"
 $WorkDir = "$HOME\Downloads\load-win"
 New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
 
-function Mark-Done { param($step); New-Item -ItemType File -Force -Path "$WorkDir\$step" | Out-Null }
-function Is-Done   { param($step); Test-Path "$WorkDir\$step" }
+# AHK macros live in the Startup folder so they relaunch at every login; their
+# presence there doubles as the "already applied" marker (no separate flag file).
+$AhkScript = Join-Path ([Environment]::GetFolderPath("Startup")) "MacKeyboard_LGG.ahk"
 
 # Find-AhkExe - locate an installed AutoHotkey interpreter, or return $null. Used
 # both to preview (is AutoHotkey present?) and to run the macros. The winget
@@ -192,6 +193,23 @@ $CORE_UV = @(
     "mhl-suite"
 )
 
+# Friendly display names for the winget ids (used by the checklist). uv tools are
+# already human-readable, so they pass through unchanged.
+$PKG_ALIAS = @{
+    "astral-sh.uv"                = "uv"
+    "MediaArea.MediaInfo"         = "MediaInfo CLI"
+    "MediaArea.MediaInfo.GUI"     = "MediaInfo GUI"
+    "OliverBetz.ExifTool"         = "ExifTool"
+    "VideoLAN.VLC"                = "VLC"
+    "ZhornSoftware.Caffeine"      = "Caffeine"
+    "Gyan.FFmpeg"                 = "FFmpeg"
+    "AutoHotkey.AutoHotkey"       = "AutoHotKey"
+    "Google.Chrome"               = "Google Chrome"
+    "Adobe.Acrobat.Reader.64-bit" = "Adobe Acrobat Reader"
+    "Audacity.Audacity"           = "Audacity"
+}
+function pkg_alias($id) { if ($PKG_ALIAS.ContainsKey($id)) { $PKG_ALIAS[$id] } else { $id } }
+
 # Sourced as a library (tests set $env:LOAD_LIB): stop here, run nothing below.
 if ($env:LOAD_LIB) { return }
 
@@ -232,15 +250,23 @@ $PREMIERE_OK      = Test-Path "$HOME\Documents\Adobe\Premiere Pro"
 # Premiere rewrites its prefs on exit - activating a set while it's running would get clobbered.
 $PREMIERE_RUNNING = $PREMIERE_OK -and ($null -ne (Get-Process -Name "Adobe Premiere Pro*" -ErrorAction SilentlyContinue))
 $WINGET_OK        = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
-$AHK_OK        = Is-Done "ahk"
-$AHK_INSTALLED = [bool](Find-AhkExe)   # AutoHotkey already on the machine?
 
+# Premiere shortcut set + workspace we distribute (used by run_fast and the
+# "is it applied?" checklist detector).
+$KYS_FILE = "LGG_25.1_WINDOWS.kys"
+$WS_FILE  = "UserWorkspace_LGG.xml"
+
+# Keyboard repeat (fastest speed, no delay) - read here because run_fast decides
+# whether to apply it; checklist re-reads the rest of the state on its own.
 $KB_Speed = (Get-ItemProperty -Path "HKCU:\Control Panel\Keyboard" -Name "KeyboardSpeed" -ErrorAction SilentlyContinue).KeyboardSpeed
 $KB_Delay = (Get-ItemProperty -Path "HKCU:\Control Panel\Keyboard" -Name "KeyboardDelay" -ErrorAction SilentlyContinue).KeyboardDelay
 $KB_OK    = ($KB_Speed -eq "31") -and ($KB_Delay -eq "0")
 
-$VLC_EXE        = "$env:ProgramFiles\VideoLAN\VLC\vlc.exe"
-$VLC_IS_DEFAULT = (Get-ItemProperty "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.mp4\UserChoice" -ErrorAction SilentlyContinue).ProgId -eq 'VLC.mp4'
+# Default-app targets: VLC for video, Adobe Acrobat (64-bit) for PDF. The Acrobat
+# ProgId is the one the 64-bit Reader registers for .pdf.
+$VLC_EXE     = "$env:ProgramFiles\VideoLAN\VLC\vlc.exe"
+$ACRO_EXE    = "$env:ProgramFiles\Adobe\Acrobat DC\Acrobat\Acrobat.exe"
+$ACRO_PROGID = "Acrobat.Document.DC"
 
 function winget_installed($id) {
     if (-not $WINGET_OK) { return $false }
@@ -248,123 +274,190 @@ function winget_installed($id) {
     return $LASTEXITCODE -eq 0 -and ($result -match [regex]::Escape($id))
 }
 
+# winget_apply <id> - install the package, or just check for an upgrade when it's
+# already present. The upgrade path's output (the repetitive "No available upgrade
+# found" chatter) is routed to null; a fresh install still shows its progress.
+function winget_apply($id) {
+    if (winget_installed $id) {
+        Write-Host "  [done]  $id - checking for updates"
+        winget upgrade --id $id --exact --silent --accept-package-agreements --accept-source-agreements *> $null
+    } else {
+        winget install --id $id --exact --silent --accept-package-agreements --accept-source-agreements
+    }
+}
+
 function uv_installed($pkg) {
     if (-not (Get-Command uv -ErrorAction SilentlyContinue)) { return $false }
     return [bool]((uv tool list 2>$null) -match "^$pkg")
 }
 
-function Would-Run  { param($msg); Write-Host "  [run]   $msg" }
-function Would-Skip { param($msg); Write-Host "  [skip]  $msg" }
-function Already-Done { param($msg); Write-Host "  [done]  $msg" }
+# app_installed <pattern> - true if any Windows uninstall entry's DisplayName
+# matches <pattern> (per-machine 64- and 32-bit, plus per-user).
+function app_installed($pattern) {
+    foreach ($key in @(
+        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
+        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*",
+        "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*"
+    )) {
+        if (Get-ItemProperty $key -ErrorAction SilentlyContinue |
+            Where-Object { $_.DisplayName -match $pattern }) { return $true }
+    }
+    return $false
+}
 
-Write-Host ""
+# Premiere plugins already on the machine? Each registers a Windows uninstall entry.
+function flickerfree_installed { app_installed 'Flicker Free' }
+function misterhorse_installed { app_installed 'Mister Horse' }
 
-# Premiere Pro
-if ($PREMIERE_OK) {
-    if (-not $RUN_FAST) {
-        Already-Done "Premiere Pro shortcuts & workspace"
-        Already-Done "Premiere Pro preferences"
+# premiere_applied - true once our shortcut set is active in any Premiere profile
+# (the prefs' Shortcuts.Filename points at our .kys). Reads the prefs with the same
+# BOM-aware decoding as Set-PrefNode.
+function premiere_applied {
+    if (-not $PREMIERE_OK) { return $false }
+    foreach ($profileDir in Get-ChildItem "$HOME\Documents\Adobe\Premiere Pro\*\Profile-*" -Directory -ErrorAction SilentlyContinue) {
+        $prefs = Join-Path $profileDir.FullName "Adobe Premiere Pro Prefs"
+        if (-not (Test-Path $prefs)) { continue }
+        $bytes = [System.IO.File]::ReadAllBytes($prefs)
+        if     ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE) { $enc = [System.Text.Encoding]::Unicode }
+        elseif ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFE -and $bytes[1] -eq 0xFF) { $enc = [System.Text.Encoding]::BigEndianUnicode }
+        else                                                                          { $enc = [System.Text.Encoding]::UTF8 }
+        if ($enc.GetString($bytes) -match "<FE\.Prefs\.Shortcuts\.Filename>$([regex]::Escape($KYS_FILE))</FE\.Prefs\.Shortcuts\.Filename>") { return $true }
+    }
+    return $false
+}
+
+# luts_present - true once at least one LUT has been downloaded into the work dir.
+function luts_present { [bool](Get-ChildItem "$WorkDir\LUTs" -File -ErrorAction SilentlyContinue | Select-Object -First 1) }
+
+function Done     { param($msg); Write-Host ("  " + "[done]".PadRight(12)      + $msg) }
+function Skipped  { param($msg); Write-Host ("  " + "[skipped]".PadRight(12)   + $msg) }
+function WouldRun { param($msg); Write-Host ("  " + "[would run]".PadRight(12) + $msg) }
+
+# checklist - print the live state of every action: [done], [skipped] or [would
+# run]. The same call works at the start of a run (a preview - nothing done yet) or
+# at the end (a summary - state reflects what ran), because every line is derived
+# from the real current state plus the run mode. No flags, no "post" switch.
+function checklist {
+    $kbSpeed = (Get-ItemProperty "HKCU:\Control Panel\Keyboard" -Name "KeyboardSpeed" -ErrorAction SilentlyContinue).KeyboardSpeed
+    $kbDelay = (Get-ItemProperty "HKCU:\Control Panel\Keyboard" -Name "KeyboardDelay" -ErrorAction SilentlyContinue).KeyboardDelay
+    $kbOk    = ($kbSpeed -eq "31") -and ($kbDelay -eq "0")
+    $premiereRunning = $PREMIERE_OK -and ($null -ne (Get-Process -Name "Adobe Premiere Pro*" -ErrorAction SilentlyContinue))
+    $vlcInstalled  = Test-Path $VLC_EXE
+    $acroInstalled = Test-Path $ACRO_EXE
+    $vlcDefault    = (Get-ItemProperty "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.mp4\UserChoice" -ErrorAction SilentlyContinue).ProgId -eq 'VLC.mp4'
+    $acroDefault   = (Get-ItemProperty "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.pdf\UserChoice" -ErrorAction SilentlyContinue).ProgId -eq $ACRO_PROGID
+    $ahkActive    = Test-Path $AhkScript
+    $ahkInstalled = [bool](Find-AhkExe)
+
+    Write-Host ""
+
+    # Premiere Pro - shortcuts, workspace and preferences always go together, so they
+    # show as one line. (When Premiere is open the files are dropped but not activated.)
+    if (-not $PREMIERE_OK)    { Skipped  "Premiere Pro (shortcuts, workspace and preferences) - not installed" }
+    elseif ($premiereRunning) { Skipped  "Premiere Pro (shortcuts, workspace and preferences) - Premiere Pro is open" }
+    elseif (premiere_applied) { Done     "Premiere Pro (shortcuts, workspace and preferences)" }
+    else                      { WouldRun "Premiere Pro (shortcuts, workspace and preferences)" }
+
+    # Keyboard preferences
+    if ($kbOk) { Done "Keyboard preferences" } else { WouldRun "Keyboard preferences" }
+
+    # Install or update apps - winget packages, then the Premiere plugins, then the uv
+    # tools (each entry paired with its "already installed?" check, in that order).
+    $apps = @()
+    foreach ($pkg in $CORE_PKGS)              { $apps += @{ name = (pkg_alias $pkg); ok = (winget_installed $pkg) } }
+    if ($FULL) { foreach ($pkg in $FULL_PKGS) { $apps += @{ name = (pkg_alias $pkg); ok = (winget_installed $pkg) } } }
+    if ($PREMIERE_OK) {
+        $apps += @{ name = "Mister Horse Product Manager"; ok = (misterhorse_installed) }
+        $apps += @{ name = "Flicker Free";                 ok = (flickerfree_installed) }
+    }
+    foreach ($pkg in $CORE_UV)                { $apps += @{ name = $pkg; ok = (uv_installed $pkg) } }
+
+    if ($FAST) {
+        Skipped ("Install or update apps (--fast) - " + (($apps | ForEach-Object { $_.name }) -join ", "))
     } else {
-        Would-Run  "Premiere Pro shortcuts & workspace"
-        if ($PREMIERE_RUNNING) { Would-Skip "Premiere Pro preferences - Premiere Pro is open" }
-        else                   { Would-Run  "Premiere Pro preferences" }
+        $done = @($apps | Where-Object { $_.ok }      | ForEach-Object { $_.name })
+        $todo = @($apps | Where-Object { -not $_.ok }  | ForEach-Object { $_.name })
+        if ($done.Count -gt 0) { Done     ("Install or update apps: " + ($done -join ", ")) }
+        if ($todo.Count -gt 0) { WouldRun ("Install or update apps: " + ($todo -join ", ")) }
     }
-    if ($FAST) { Would-Skip "Premiere Pro plugins (--fast)" }
-    else       { Would-Run  "Premiere Pro plugins - Animation Composer, Flicker Free" }
-} else {
-    Would-Skip "Premiere Pro shortcuts & workspace - not installed"
-    Would-Skip "Premiere Pro preferences - not installed"
-    Would-Skip "Premiere Pro plugins - not installed"
+
+    # Default apps - VLC for video, Adobe Acrobat Reader for PDF. "Done" once every
+    # installed one of the two owns its types; nothing to do if neither is installed.
+    $anyInstalled = $vlcInstalled -or $acroInstalled
+    $allDefault   = ((-not $vlcInstalled) -or $vlcDefault) -and ((-not $acroInstalled) -or $acroDefault)
+    if (-not $anyInstalled -and $FAST)      { Skipped  "Change default apps (--fast) - VLC, Adobe Acrobat Reader not installed" }
+    elseif ($anyInstalled -and $allDefault) { Done     "Change default apps: VLC, Adobe Acrobat Reader" }
+    else                                    { WouldRun "Change default apps: VLC, Adobe Acrobat Reader" }
+
+    # Activate AHK macros - applied whenever AutoHotkey is present. In --fast we only
+    # have a pre-installed AutoHotkey to work with (installing it is a Full-pass step).
+    if ($ahkActive)        { Done     "Activate AHK macros" }
+    elseif ($ahkInstalled) { WouldRun "Activate AHK macros" }
+    elseif ($FAST)         { Skipped  "Activate AHK macros (--fast) - AutoHotkey not installed" }
+    else                   { WouldRun "Activate AHK macros" }
+
+    # Download LUTs
+    if ($FAST)            { Skipped  "Download LUTs (--fast)" }
+    elseif (luts_present) { Done     "Download LUTs" }
+    else                  { WouldRun "Download LUTs" }
+
+    Write-Host ""
 }
-
-# Keyboard preferences (lightweight config - skipped in the Full hand-off)
-if (-not $RUN_FAST) { Already-Done "Keyboard preferences" }
-elseif ($KB_OK)       { Already-Done "Keyboard preferences" }
-else                  { Would-Run    "Keyboard preferences" }
-
-# winget packages (lists defined above the library guard)
-if ($FAST) {
-    $all = $CORE_PKGS + $CORE_UV
-    if ($FULL) { $all += $FULL_PKGS }
-    Would-Skip ("managed packages (--fast) - " + ($all -join ", "))
-} else {
-    $PKG_LIST = $CORE_PKGS
-    if ($FULL) { $PKG_LIST += $FULL_PKGS }
-
-    $pkgs_done = @(); $pkgs_todo = @()
-    foreach ($pkg in $PKG_LIST) {
-        if (winget_installed $pkg) { $pkgs_done += $pkg } else { $pkgs_todo += $pkg }
-    }
-    foreach ($pkg in $CORE_UV) {
-        if (uv_installed $pkg) { $pkgs_done += $pkg } else { $pkgs_todo += $pkg }
-    }
-
-    if ($pkgs_done.Count -gt 0) { Would-Run ("update managed packages: "  + ($pkgs_done -join ", ")) }
-    if ($pkgs_todo.Count -gt 0) { Would-Run ("install managed packages: " + ($pkgs_todo -join ", ")) }
-}
-
-# VLC as default video player
-if ($VLC_IS_DEFAULT)                           { Already-Done "VLC as default video player" }
-elseif ($FAST -and -not (Test-Path $VLC_EXE)) { Would-Skip   "VLC as default video player - VLC not installed" }
-else                                           { Would-Run    "VLC as default video player" }
-
-# AHK shortcuts - applied whenever AutoHotkey is present. In --fast we only have a
-# pre-installed AutoHotkey to work with (installing it is a Full-pass step).
-if ($AHK_OK)            { Already-Done "AHK shortcuts" }
-elseif ($AHK_INSTALLED) { Would-Run    "AHK shortcuts" }
-elseif ($FAST)          { Would-Skip   "AHK shortcuts (--fast) - AutoHotkey not installed" }
-else                    { Would-Run    "AHK shortcuts" }
-
-# LUTs
-if ($FAST) { Would-Skip "LUTs (--fast)" }
-else       { Would-Run  "LUTs" }
-
-Write-Host ""
-if ($DRY_RUN) { exit 0 }
 
 # -----------------------------------------------------------------------------
 # Phase functions
 # -----------------------------------------------------------------------------
 # run_fast - lightweight preference changes only (no downloads/installs).
-# run_slow - everything that downloads or installs. VLC-as-default is config that
-# needs VLC present, so Set-VlcDefault runs in both phases (idempotent: it
-# re-checks the current default and no-ops once VLC already owns the types). The
+# run_slow - everything that downloads or installs. Setting default apps is config
+# that needs the app present, so Set-DefaultApps runs in both phases (idempotent: it
+# re-checks the current default and no-ops once the app already owns its types). The
 # bare command runs run_fast inline then hands off to a Full pass that runs
 # run_slow; --fast runs run_fast only and --full runs both.
 
-function Set-VlcDefault {
-    # Point Explorer's per-extension UserChoice at VLC's registered ProgIds
-    # (VLC.<ext>, created by the VLC installer). No-op if VLC isn't installed or
-    # already owns .mp4; re-queries so it's safe to call from both phases.
-    if (-not (Test-Path $VLC_EXE)) { return }
-    $cur = (Get-ItemProperty "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.mp4\UserChoice" -ErrorAction SilentlyContinue).ProgId
-    if ($cur -eq 'VLC.mp4') { return }
-    foreach ($ext in @('mp4','m4v','mov','mkv','avi','wmv','flv','webm','mpg','mpeg','m2ts','mts','ts','vob','mxf')) {
-        try { Set-FileAssociation ".$ext" "VLC.$ext" } catch {}
+function Set-DefaultApps {
+    # Point Explorer's per-extension UserChoice at each app's registered ProgIds.
+    # Each app is gated on being installed and re-queries the current default, so
+    # it's a no-op once owned and safe to call from both phases.
+
+    # VLC for the common video container types (ProgIds VLC.<ext> from the installer).
+    if (Test-Path $VLC_EXE) {
+        $cur = (Get-ItemProperty "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.mp4\UserChoice" -ErrorAction SilentlyContinue).ProgId
+        if ($cur -ne 'VLC.mp4') {
+            foreach ($ext in @('mp4','m4v','mov','mkv','avi','wmv','flv','webm','mpg','mpeg','m2ts','mts','ts','vob','mxf')) {
+                try { Set-FileAssociation ".$ext" "VLC.$ext" } catch {}
+            }
+        }
+    }
+
+    # Adobe Acrobat Reader for PDF.
+    if (Test-Path $ACRO_EXE) {
+        $cur = (Get-ItemProperty "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.pdf\UserChoice" -ErrorAction SilentlyContinue).ProgId
+        if ($cur -ne $ACRO_PROGID) {
+            try { Set-FileAssociation ".pdf" $ACRO_PROGID } catch {}
+        }
     }
 }
 
 function Install-AhkMacros {
-    # Download the AHK macro script and launch it (elevated) under the installed
-    # AutoHotkey. No-op once done, or when AutoHotkey isn't present.
-    if (Is-Done "ahk") { return }
+    # Install the AHK macro script into the user's Startup folder (so it loads on
+    # every login - not left lying in the work dir) and launch it now so the
+    # shortcuts work immediately. The file's presence there is the "done" marker.
+    if (Test-Path $AhkScript) { return }
     $ahkExe = Find-AhkExe
     if (-not $ahkExe) {
         Write-Host "  [warn] AutoHotkey not found - skipping AHK shortcuts"
         return
     }
-    $ahkPath = "$WorkDir\MacKeyboard_LGG.ahk"
-    curl.exe -s -o $ahkPath "https://raw.githubusercontent.com/lucuma13/load/refs/heads/main/src/data/MacKeyboard_LGG.ahk"
-    Start-Process $ahkExe -ArgumentList $ahkPath -Verb RunAs
-    Mark-Done "ahk"
+    curl.exe -s -o $AhkScript "https://raw.githubusercontent.com/lucuma13/load/refs/heads/main/src/data/MacKeyboard_LGG.ahk"
+    # Quote the path (a profile dir may contain spaces) and launch non-elevated, the
+    # way it'll start at every login - an elevated RunAs launch also pops a UAC
+    # prompt mid-run that, if dismissed, leaves the macros inactive.
+    Start-Process $ahkExe -ArgumentList "`"$AhkScript`""
 }
 
 function run_fast {
     # Premiere Pro shortcuts & workspace
     if ($PREMIERE_OK) {
-        $KYS_FILE = "LGG_25.1_WINDOWS.kys"
-        $WS_FILE  = "UserWorkspace_LGG.xml"
-
         foreach ($profileDir in Get-ChildItem "$HOME\Documents\Adobe\Premiere Pro\*\Profile-*" -Directory -ErrorAction SilentlyContinue) {
             $prefs   = Join-Path $profileDir.FullName "Adobe Premiere Pro Prefs"
             $winDir  = Join-Path $profileDir.FullName "Win"
@@ -407,8 +500,8 @@ public class KeyboardConfig {
         [KeyboardConfig]::SystemParametersInfo(0x000B, 31, 0, 0) | Out-Null  # SPI_SETKEYBOARDSPEED
     }
 
-    # VLC as default video player - config that needs VLC present (see Set-VlcDefault)
-    Set-VlcDefault
+    # Default apps - config that needs the app present (see Set-DefaultApps)
+    Set-DefaultApps
 
     # AHK macros - apply now if AutoHotkey is already installed (covers --fast on a
     # machine that has it). On a Full run AutoHotkey is installed in run_slow, which
@@ -418,25 +511,22 @@ public class KeyboardConfig {
 
 function run_slow {
     # Managed packages
-    foreach ($pkg in $CORE_PKGS) {
-        winget install $pkg --accept-package-agreements --accept-source-agreements
-    }
+    foreach ($pkg in $CORE_PKGS) { winget_apply $pkg }
     # Refresh PATH so newly installed tools (uv, etc.) are available in this session
     $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
                 [System.Environment]::GetEnvironmentVariable("Path", "User")
     foreach ($pkg in $CORE_UV) {
         uv tool install $pkg --upgrade
     }
-    # Add uv's tool bin dir to PATH permanently and refresh for this session
-    uv tool update-shell
+    # Add uv's tool bin dir to PATH permanently and refresh for this session (quiet:
+    # it prints "already in PATH" once set up)
+    uv tool update-shell *> $null
     $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
                 [System.Environment]::GetEnvironmentVariable("Path", "User")
 
     # Full-only managed packages
     if ($FULL) {
-        foreach ($pkg in $FULL_PKGS) {
-            winget install $pkg --accept-package-agreements --accept-source-agreements
-        }
+        foreach ($pkg in $FULL_PKGS) { winget_apply $pkg }
         # Refresh PATH so newly installed tools (AutoHotkey, etc.) are available in this session
         $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
                     [System.Environment]::GetEnvironmentVariable("Path", "User")
@@ -458,36 +548,46 @@ public class Win32Env {
     [IntPtr]$res = [IntPtr]::Zero
     [Win32Env]::SendMessageTimeout($HWND_BROADCAST, 0x001A, [IntPtr]::Zero, "Environment", 2, 5000, [ref]$res) | Out-Null  # WM_SETTINGCHANGE
 
-    # VLC as default video player - now that VLC is installed (covers a fresh machine)
-    Set-VlcDefault
+    # Default apps - now that VLC/Acrobat are installed (covers a fresh machine)
+    Set-DefaultApps
 
     # AHK macros - AutoHotkey was installed above on a Full run (or already present)
     Install-AhkMacros
 
-    # Premiere plugins - Mister Horse's Product Manager installs & updates Animation
-    # Composer (and the other Mister Horse plugins) into Premiere/After Effects. We
-    # download the Product Manager installer and run it; Animation Composer itself is
-    # then installed from within the app on first launch.
+    # Premiere plugins - Mister Horse Product Manager is the app that installs &
+    # updates the Mister Horse plugins (Animation Composer etc.) into Premiere/After
+    # Effects; the plugins themselves are then added from within it on first launch.
+    # We install the Product Manager here; Flicker Free is a standalone installer.
     if ($PREMIERE_OK) {
-        $pmPath = "$WorkDir\MisterHorseProductManager.msi"
-        curl.exe -fsSL -o $pmPath "https://misterhorse.com/downloads/product-manager/win"
-        $pm = Start-Process msiexec.exe -ArgumentList "/i `"$pmPath`" /qn" -Verb RunAs -Wait -PassThru
-        # Clean up the installer once it finished successfully (exit 0).
-        if ($pm.ExitCode -eq 0) { Remove-Item $pmPath -Force -ErrorAction SilentlyContinue }
+        # Skip the download + (elevated) MSI when the Product Manager is already installed.
+        if (misterhorse_installed) {
+            Write-Host "  [done]  Mister Horse Product Manager already installed"
+        } else {
+            $pmPath = "$WorkDir\MisterHorseProductManager.msi"
+            curl.exe -fsSL -o $pmPath "https://misterhorse.com/downloads/product-manager/win"
+            $pm = Start-Process msiexec.exe -ArgumentList "/i `"$pmPath`" /qn" -Verb RunAs -Wait -PassThru
+            # Clean up the installer once it finished successfully (exit 0).
+            if ($pm.ExitCode -eq 0) { Remove-Item $pmPath -Force -ErrorAction SilentlyContinue }
+        }
 
         # Flicker Free - Digital Anarchy's deflicker plugin. The download is a zip
-        # wrapping the installer .exe; we extract it and run the installer.
-        $ffZip = "$WorkDir\flickerfree_229_AE.zip"
-        $ffDir = "$WorkDir\flickerfree_229_AE"
-        curl.exe -fsSL -o $ffZip "https://www.digitalanarchy.com/downloads/flickerfree_229_AE.zip"
-        Expand-Archive -Path $ffZip -DestinationPath $ffDir -Force
-        $ffExe = Get-ChildItem $ffDir -Filter *.exe | Select-Object -First 1
-        if ($ffExe) {
-            $ff = Start-Process $ffExe.FullName -Verb RunAs -Wait -PassThru
-            # Clean up the zip and extracted installer once it finished successfully.
-            if ($ff.ExitCode -eq 0) {
-                Remove-Item $ffZip -Force -ErrorAction SilentlyContinue
-                Remove-Item $ffDir -Recurse -Force -ErrorAction SilentlyContinue
+        # wrapping the installer .exe; we extract it and run the installer. Skip the
+        # whole download+install when it's already present.
+        if (flickerfree_installed) {
+            Write-Host "  [done]  Flicker Free already installed"
+        } else {
+            $ffZip = "$WorkDir\flickerfree_229_AE.zip"
+            $ffDir = "$WorkDir\flickerfree_229_AE"
+            curl.exe -fsSL -o $ffZip "https://www.digitalanarchy.com/downloads/flickerfree_229_AE.zip"
+            Expand-Archive -Path $ffZip -DestinationPath $ffDir -Force
+            $ffExe = Get-ChildItem $ffDir -Filter *.exe | Select-Object -First 1
+            if ($ffExe) {
+                $ff = Start-Process $ffExe.FullName -Verb RunAs -Wait -PassThru
+                # Clean up the zip and extracted installer once it finished successfully.
+                if ($ff.ExitCode -eq 0) {
+                    Remove-Item $ffZip -Force -ErrorAction SilentlyContinue
+                    Remove-Item $ffDir -Recurse -Force -ErrorAction SilentlyContinue
+                }
             }
         }
     }
@@ -515,11 +615,16 @@ public class Win32Env {
 # and run_slow does the downloads/installs.
 # -----------------------------------------------------------------------------
 
+# --dry-run just prints the checklist (a preview, since nothing has run), then stops.
+if ($DRY_RUN) { checklist; exit 0 }
+
 if ($RUN_FAST) { run_fast }
 
 if ($AUTO) {
     # Fast pass finished. Only now save the script to a temp file - so nothing is
-    # left on disk if the user stops here - and run the Full pass from it.
+    # left on disk if the user stops here - and run the Full pass from it. The Full
+    # pass prints the post-install summary at the end (its live state covers what
+    # this Fast pass just did too), so we don't print one here.
     Read-Host "  Fast loading is complete. Press enter to continue on FULL mode" | Out-Null
     $self = "$env:TEMP\load-win.ps1"
     Invoke-WebRequest -Uri "https://raw.githubusercontent.com/lucuma13/load/main/src/load-win.ps1" -UseBasicParsing |
@@ -531,6 +636,7 @@ if ($AUTO) {
 
 if ($RUN_SLOW) { run_slow }
 
-Write-Host ""
+# Final checklist - same call as the preview, but now it reports the end state.
+checklist
 Write-Host "  You're ready to roll!"
 Write-Host ""
