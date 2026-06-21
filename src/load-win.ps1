@@ -6,10 +6,8 @@ Windows workstation setup script
 Copyright (c) 2026 Luis Gomez Gutierrez
 
 .EXAMPLE
-# With interactive menu:
-
-.EXAMPLE
-# With bypass execution policy and flags (append --fast/--full/--dry-run):
+# With interactive menu (optional flags: --fast/--full/--dry-run):
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/lucuma13/load/main/src/load-win.ps1" -UseBasicParsing -OutFile "$env:TEMP\load-win.ps1"; powershell -ExecutionPolicy Bypass -File "$env:TEMP\load-win.ps1"
 #>
 
 

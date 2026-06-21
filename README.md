@@ -10,7 +10,7 @@ curl -fsSL https://raw.githubusercontent.com/lucuma13/load/main/src/load-mac.sh 
 
 * Windows:
 ```powershell
-iwr -Uri "https://raw.githubusercontent.com/lucuma13/load/main/src/load-win.ps1" -OutFile "$env:TEMP\load-win.ps1" -UseBasicParsing; powershell.exe -ExecutionPolicy Bypass -File "$env:TEMP\load-win.ps1"
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/lucuma13/load/main/src/load-win.ps1" -UseBasicParsing -OutFile "$env:TEMP\load-win.ps1"; powershell -ExecutionPolicy Bypass -File "$env:TEMP\load-win.ps1"
 ```
 
 
@@ -72,13 +72,4 @@ Invoke-Pester tests\windows_premiere.Tests.ps1
 There's no lockfile/Dependabot for Pester (the PowerShell Gallery isn't a
 supported Dependabot ecosystem), so its version is managed manually.
 
-<!--
-* Windows alternative with Bypass upfront: powershell -ExecutionPolicy Bypass -Command "iwr https://raw.githubusercontent.com/lucuma13/load/main/src/load-win.ps1 | iex"
 
-* Windows alternative with irm: irm "https://raw.githubusercontent.com/lucuma13/load/main/src/load-win.ps1" -OutFile "$env:TEMP\load-win.ps1"; powershell.exe -ExecutionPolicy Bypass -File "$env:TEMP\load-win.ps1"
-
--UseBasicParsing -> needed with iwr for powershell 5.1
-Set-Content "$env:TEMP\load-win.ps1" -> avoid, it may introduce CRLF
--OutFile "$env:TEMP\load-win.ps1" -> raw bytes the same, creates new file
--Encoding UTF8 -> avoid, BOM
--->
