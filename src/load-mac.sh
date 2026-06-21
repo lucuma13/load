@@ -1,8 +1,10 @@
 #!/bin/bash
 # Mac workstation setup script
-# Usage: curl -fsSL https://raw.githubusercontent.com/lucuma13/load/main/src/load-mac.sh | bash
-#   Run with no flag to be prompted for the setup type, or pass one explicitly.
-# Flags: --fast  --full  --dry-run
+# Copyright (c) 2026 Luis Gómez Gutiérrez
+#
+# Usage:
+# curl -fsSL https://raw.githubusercontent.com/lucuma13/load/main/src/load-mac.sh | bash
+
 
 SELF_URL="https://raw.githubusercontent.com/lucuma13/load/main/src/load-mac.sh"
 
@@ -46,28 +48,9 @@ resolve_mode() {
   echo "${out# }"
 }
 
-# choose_mode — prompt on the terminal for Fast/Full and echo "fast"/"full".
-# Reads /dev/tty (not stdin, which is the piped script under curl | bash).
-# Returns 1 when there is no terminal to prompt from.
-choose_mode() {
-  # Open the terminal on fd 3 (stdin is the piped script under curl | bash).
-  # Probe inside a redirected group so a missing tty fails quietly.
-  { exec 3<>/dev/tty; } 2>/dev/null || return 1
-  local reply
-  while true; do
-    printf '%s' "  Setup type — [1] Fast (config only)  [2] Full (everything): " >&3
-    read -r reply <&3 || { exec 3>&-; return 1; }
-    case "$reply" in
-      1|fast|Fast) exec 3>&-; echo fast; return 0 ;;
-      2|full|Full) exec 3>&-; echo full; return 0 ;;
-      *) printf '%s\n' "  Please enter 1 or 2." >&3 ;;
-    esac
-  done
-}
-
 usage() {
   echo "Usage: load-mac.sh [--fast | --full | --dry-run]" >&2
-  echo "  Run with no flag in a terminal to be prompted for the setup type." >&2
+  echo "  Run with no flag in a terminal to run Fast, then continue on Full." >&2
 }
 
 # premiere_workspace_name <workspace.xml> — echo the workspace display name,
@@ -156,6 +139,14 @@ premiere_set_media_cache() {
   defaults write "$domain" "Media Cache" -dict-add FolderPath "${cache_dir%/}/"
 }
 
+# Managed package lists. Kept above the guard so the test suite can source them
+# and confirm every formula/cask still resolves (catches renames/delisting/typos).
+CORE_FORMULAE="media-info exiftool ffmpeg uv"
+CORE_CASKS="vlc caffeine mediainfo"
+CORE_UV="triplecheck mhl-suite"
+FULL_FORMULAE="git"  # add these if needed: atomicparsley, bento4, wget
+FULL_CASKS="google-chrome adobe-acrobat-reader audacity mediahuman-audio-converter appcleaner"
+
 # Sourced as a library (tests set LOAD_LIB=1): stop here, run nothing below.
 [ -n "${LOAD_LIB:-}" ] && return 0 2>/dev/null
 
@@ -166,16 +157,31 @@ set -euo pipefail
 # -----------------------------------------------------------------------------
 
 MODES="$(resolve_mode "$@")"
-if [ -z "$MODES" ]; then
-  CHOSEN="$(choose_mode)" || { usage; exit 1; }
-  set -- "--$CHOSEN"
-  MODES="$CHOSEN"
-fi
 
 FAST=false; FULL=false; DRY_RUN=false
 case " $MODES " in *" fast "*)   FAST=true    ;; esac
 case " $MODES " in *" full "*)   FULL=true    ;; esac
 case " $MODES " in *" dryrun "*) DRY_RUN=true ;; esac
+
+# No flag given — run the Fast pass inline now (quick config), then pause and
+# hand off to the Full pass (see the Dispatch section, which only then downloads
+# the script to a temp file). We need a terminal to prompt for that hand-off; stdin
+# is the piped script under curl | bash, so probe /dev/tty rather than stdin.
+# Bail if there is none (e.g. CI) so we don't run a heavy install unattended.
+AUTO=false
+if [ -z "$MODES" ]; then
+  { exec 3<>/dev/tty; } 2>/dev/null || { usage; exit 1; }
+  exec 3>&-
+  AUTO=true
+  FAST=true
+fi
+
+# Phase gates. run_fast applies lightweight config; run_slow does the
+# downloads/installs. The bare command runs Fast inline then hands off to a Full
+# pass (marked with LOAD_FROM_FAST) that runs Slow only — so Fast is skipped there
+# to avoid repeating the same actions.
+RUN_FAST=true;  [ -n "${LOAD_FROM_FAST:-}" ] && RUN_FAST=false
+RUN_SLOW=true;  $FAST && RUN_SLOW=false
 
 # Re-exec from a real file when piped (curl | bash) for non-fast runs. Reading
 # the script from stdin lets child processes (e.g. brew's ca-certificates
@@ -206,11 +212,17 @@ echo ""
 
 # Premiere Pro
 if $PREMIERE_OK; then
-  would_run  "Premiere Pro shortcuts & workspace"
-  if $PREMIERE_RUNNING; then would_skip "Premiere Pro preferences — Premiere Pro is open"
-  else                       would_run  "Premiere Pro preferences"; fi
-  if [ -n "$SCRATCH" ]; then would_run  "Premiere media cache → $SCRATCH/Cache"
-  else                       would_skip "Premiere media cache — no SCRATCH drive"; fi
+  if ! $RUN_FAST; then
+    already_done "Premiere Pro shortcuts & workspace"
+    already_done "Premiere Pro preferences"
+    already_done "Premiere media cache"
+  else
+    would_run  "Premiere Pro shortcuts & workspace"
+    if $PREMIERE_RUNNING; then would_skip "Premiere Pro preferences — Premiere Pro is open"
+    else                       would_run  "Premiere Pro preferences"; fi
+    if [ -n "$SCRATCH" ]; then would_run  "Premiere media cache → $SCRATCH/Cache"
+    else                       would_skip "Premiere media cache — no SCRATCH drive"; fi
+  fi
   if $FAST; then would_skip "Premiere Pro plugins (--fast)"
   else           would_run  "Premiere Pro plugins — Animation Composer, Flicker Free"; fi
 else
@@ -219,27 +231,27 @@ else
   would_skip "Premiere Pro plugins — not installed"
 fi
 
-# System / Finder / TextEdit — always run
-would_run "System preferences"
-would_run "Finder preferences"
-would_run "TextEdit preferences"
-
-# Homebrew
-if $BREW_OK; then
-  already_done "Homebrew"
-elif $FAST; then
-  would_skip "Homebrew (--fast)"
+# System / Finder / TextEdit — lightweight config (skipped in the Full hand-off)
+if $RUN_FAST; then
+  would_run    "System preferences"
+  would_run    "Finder preferences"
+  would_run    "TextEdit preferences"
 else
-  would_run "Homebrew"
+  already_done "System preferences"
+  already_done "Finder preferences"
+  already_done "TextEdit preferences"
 fi
 
-# Managed packages
-CORE_FORMULAE="media-info exiftool ffmpeg uv"
-CORE_CASKS="vlc caffeine mediainfo"
-CORE_UV="triplecheck mhl-suite"
-FULL_FORMULAE="git"  # add these if needed: atomicparsley, bento4, wget
-FULL_CASKS="google-chrome adobe-acrobat-reader audacity mediahuman-audio-converter appcleaner"
+# Homebrew
+if $FAST; then
+  would_skip "Homebrew (--fast)"
+elif $BREW_OK; then
+  would_run "update & cleanup Homebrew"
+else
+  would_run "install Homebrew"
+fi
 
+# Managed packages (lists defined above the library guard)
 if $FAST; then
   ALL_PKGS="$CORE_FORMULAE $CORE_CASKS $CORE_UV"
   $FULL && ALL_PKGS="$ALL_PKGS $FULL_FORMULAE $FULL_CASKS"
@@ -286,113 +298,111 @@ fi
 echo ""
 $DRY_RUN && exit 0
 
-# The lightweight config below runs before any slow download/install so that an
-# interrupted run still leaves the quick preference changes applied. Finder is
-# the exception — it needs python3 (Command Line Tools), so it follows CLT.
-
 # -----------------------------------------------------------------------------
-# System preferences
+# Phase functions
 # -----------------------------------------------------------------------------
+# run_fast — lightweight preference changes only (no downloads/installs).
+# run_slow — everything that downloads or installs, plus the one Finder tweak
+# that needs python3 from Command Line Tools. The bare command runs run_fast
+# inline then hands off to a Full pass that runs run_slow; --fast runs run_fast
+# only and --full runs both.
 
-defaults write NSGlobalDomain KeyRepeat -int 2
-defaults write NSGlobalDomain InitialKeyRepeat -int 15
-defaults write NSGlobalDomain com.apple.trackpad.scaling -float 2
-defaults write com.apple.controlcenter BatteryShowPercentage -bool true
+run_fast() {
+  # System preferences
+  defaults write NSGlobalDomain KeyRepeat -int 2
+  defaults write NSGlobalDomain InitialKeyRepeat -int 15
+  defaults write NSGlobalDomain com.apple.trackpad.scaling -float 2
+  defaults write com.apple.controlcenter BatteryShowPercentage -bool true
 
-defaults write com.apple.dock autohide -bool true
-defaults write com.apple.dock tilesize -int 50
-defaults write com.apple.dock magnification -bool false
-defaults write com.apple.dock orientation -string "bottom"
-defaults write com.apple.dock mru-spaces -bool false
-defaults write com.apple.dock show-recents -bool false
-killall Dock
+  defaults write com.apple.dock autohide -bool true
+  defaults write com.apple.dock tilesize -int 50
+  defaults write com.apple.dock magnification -bool false
+  defaults write com.apple.dock orientation -string "bottom"
+  defaults write com.apple.dock mru-spaces -bool false
+  defaults write com.apple.dock show-recents -bool false
+  killall Dock
 
-# -----------------------------------------------------------------------------
-# TextEdit preferences
-# -----------------------------------------------------------------------------
+  # TextEdit preferences
+  defaults write com.apple.TextEdit RichText -int 0
+  defaults write com.apple.TextEdit CorrectSpellingAutomatically -bool false
+  defaults write com.apple.TextEdit SmartDashes -bool false
+  defaults write NSGlobalDomain NSAutomaticDashSubstitutionEnabled -bool false
+  defaults write com.apple.TextEdit TextReplacement -bool false
+  defaults write NSGlobalDomain NSAutomaticTextCompletionEnabled -bool false
+  defaults write com.apple.TextEdit ShowRuler -bool false
+  killall cfprefsd
+  killall AppleSpell 2>/dev/null || true
+  killall TextEdit 2>/dev/null || true
 
-defaults write com.apple.TextEdit RichText -int 0
-defaults write com.apple.TextEdit CorrectSpellingAutomatically -bool false
-defaults write com.apple.TextEdit SmartDashes -bool false
-defaults write NSGlobalDomain NSAutomaticDashSubstitutionEnabled -bool false
-defaults write com.apple.TextEdit TextReplacement -bool false
-defaults write NSGlobalDomain NSAutomaticTextCompletionEnabled -bool false
-defaults write com.apple.TextEdit ShowRuler -bool false
-killall cfprefsd
-killall AppleSpell 2>/dev/null || true
-killall TextEdit 2>/dev/null || true
+  # Finder preferences — the top-level keys. The nested "Calculate all sizes"
+  # toggle needs python3 (Command Line Tools), so it lives in run_slow.
+  defaults write com.apple.finder ShowPathbar -bool true
+  defaults write com.apple.finder ShowStatusBar -bool true
+  defaults write com.apple.finder FXDefaultSearchScope -string "SCcf"
+  defaults write com.apple.finder NewWindowTarget -string "PfLo"
+  defaults write com.apple.finder NewWindowTargetPath -string "file://${HOME}/Downloads/"
+  killall Finder 2>/dev/null || true
 
-# -----------------------------------------------------------------------------
-# Premiere Pro shortcuts, workspace & labels
-# -----------------------------------------------------------------------------
+  # Premiere Pro shortcuts, workspace & labels
+  if $PREMIERE_OK; then
+    KYS_FILE="LGG_25.1.kys"
+    WS_FILE="UserWorkspace_LGG.xml"
 
-if $PREMIERE_OK; then
-  KYS_FILE="Luis_Mengo_25.1.kys"
-  WS_FILE="UserWorkspace_LGG.xml"
+    for profile in "$HOME/Documents/Adobe/Premiere Pro"/*/Profile-*/; do
+      [ -d "$profile" ] || continue
+      prefs="${profile}Adobe Premiere Pro Prefs"
 
-  for profile in "$HOME/Documents/Adobe/Premiere Pro"/*/Profile-*/; do
-    [ -d "$profile" ] || continue
-    prefs="${profile}Adobe Premiere Pro Prefs"
+      # Drop the shortcuts into the Profile's Mac folder (where Premiere reads custom sets)
+      mkdir -p "${profile}Mac"
+      (cd "${profile}Mac" && curl -fsSL -O "https://raw.githubusercontent.com/lucuma13/load/main/src/data/$KYS_FILE")
 
-    # Drop the shortcuts into the Profile's Mac folder (where Premiere reads custom sets)
-    mkdir -p "${profile}Mac"
-    (cd "${profile}Mac" && curl -fsSL -O "https://raw.githubusercontent.com/lucuma13/load/main/src/data/$KYS_FILE")
+      # Drop the workspace into Layouts. Premiere auto-registers it on launch.
+      mkdir -p "${profile}Layouts"
+      (cd "${profile}Layouts" && curl -fsSL -O "https://raw.githubusercontent.com/lucuma13/load/main/src/data/$WS_FILE")
+      ws_name="$(premiere_workspace_name "${profile}Layouts/$WS_FILE")"
 
-    # Drop the workspace into Layouts. Premiere auto-registers it on launch.
-    mkdir -p "${profile}Layouts"
-    (cd "${profile}Layouts" && curl -fsSL -O "https://raw.githubusercontent.com/lucuma13/load/main/src/data/$WS_FILE")
-    ws_name="$(premiere_workspace_name "${profile}Layouts/$WS_FILE")"
+      if $PREMIERE_RUNNING; then
+        echo "  ⚠️  Premiere Pro is running — files dropped but not activated"
+      elif [ -f "$prefs" ]; then
+        premiere_apply_prefs "$prefs" "$KYS_FILE" "$ws_name"
+      fi
+    done
 
-    if $PREMIERE_RUNNING; then
-      echo "  ⚠️  Premiere Pro is running — files dropped but not activated"
-    elif [ -f "$prefs" ]; then
-      premiere_apply_prefs "$prefs" "$KYS_FILE" "$ws_name"
-    fi
-  done
-
-  # Media cache — relocate the "Media Cache Files" location to a SCRATCH drive
-  # when one is attached. The setting lives in the shared Adobe "Common" prefs
-  # (com.Adobe.Common <ver>), not the Premiere prefs; skip if no SCRATCH drive.
-  if [ -n "$SCRATCH" ]; then
-    mkdir -p "$SCRATCH/Cache"
-    if $PREMIERE_RUNNING; then
-      echo "  ⚠️  Premiere Pro is running — media cache not changed"
-    else
-      for plist in "$HOME/Library/Preferences/com.Adobe.Common "*.plist; do
-        [ -f "$plist" ] || continue
-        premiere_set_media_cache "$(basename "$plist" .plist)" "$SCRATCH/Cache"
-      done
+    # Media cache — relocate the "Media Cache Files" location to a SCRATCH drive
+    # when one is attached. The setting lives in the shared Adobe "Common" prefs
+    # (com.Adobe.Common <ver>), not the Premiere prefs; skip if no SCRATCH drive.
+    if [ -n "$SCRATCH" ]; then
+      mkdir -p "$SCRATCH/Cache"
+      if $PREMIERE_RUNNING; then
+        echo "  ⚠️  Premiere Pro is running — media cache not changed"
+      else
+        for plist in "$HOME/Library/Preferences/com.Adobe.Common "*.plist; do
+          [ -f "$plist" ] || continue
+          premiere_set_media_cache "$(basename "$plist" .plist)" "$SCRATCH/Cache"
+        done
+      fi
     fi
   fi
-fi
+}
 
-# -----------------------------------------------------------------------------
-# Command Line Tools (provides git/python3; required by Homebrew)
-# -----------------------------------------------------------------------------
-# Skipped with --fast, which assumes an already-provisioned machine. Without
-# this, a fresh Mac triggers the Xcode CLT dialog mid-run and aborts, forcing a
-# manual re-run. We pop the installer and wait for it to finish.
+run_slow() {
+  # Command Line Tools (provides git/python3; required by Homebrew). Without this,
+  # a fresh Mac triggers the Xcode CLT dialog mid-run and aborts; we pop the
+  # installer and wait for it to finish.
+  if ! xcode-select -p &>/dev/null; then
+    echo "  🚀  Command Line Tools — installing (accept the dialog; this can take a few minutes)…"
+    xcode-select --install &>/dev/null || true
+    until xcode-select -p &>/dev/null; do sleep 10; done
+  fi
 
-if ! $FAST && ! xcode-select -p &>/dev/null; then
-  echo "  🚀  Command Line Tools — installing (accept the dialog; this can take a few minutes)…"
-  xcode-select --install &>/dev/null || true
-  until xcode-select -p &>/dev/null; do sleep 10; done
-fi
-
-# -----------------------------------------------------------------------------
-# Finder preferences (needs python3 from Command Line Tools)
-# -----------------------------------------------------------------------------
-
-defaults write com.apple.finder ShowPathbar -bool true
-defaults write com.apple.finder ShowStatusBar -bool true
-defaults write com.apple.finder FXDefaultSearchScope -string "SCcf"
-defaults write com.apple.finder NewWindowTarget -string "PfLo"
-defaults write com.apple.finder NewWindowTargetPath -string "file://${HOME}/Downloads/"
-
-osascript -e 'tell application "Finder" to quit'
-sleep 2
-plutil -convert xml1 ~/Library/Preferences/com.apple.finder.plist
-python3 -c "
+  # Finder "Calculate all sizes" — a nested plist key defaults(1) can't reach, so
+  # we edit it with python3 (now available from CLT). Quit Finder first so it
+  # doesn't rewrite the plist on exit and clobber the edit.
+  if command -v python3 &>/dev/null; then
+    osascript -e 'tell application "Finder" to quit'
+    sleep 2
+    plutil -convert xml1 ~/Library/Preferences/com.apple.finder.plist
+    python3 -c "
 import plistlib, os
 path = os.path.expanduser('~/Library/Preferences/com.apple.finder.plist')
 p = plistlib.load(open(path,'rb'))
@@ -409,108 +419,97 @@ def f(o):
 f(p)
 plistlib.dump(p,open(path,'wb'))
 "
-sleep 1
-open -a Finder
+    sleep 1
+    open -a Finder
+  else
+    echo "  ⚠️  Finder 'Calculate all sizes' skipped — python3 not available"
+  fi
 
-# -----------------------------------------------------------------------------
-# Cache sudo credentials (only the steps below need root) and keep them alive
-# -----------------------------------------------------------------------------
-
-if ! $FAST; then
+  # Cache sudo credentials (only the steps below need root) and keep them alive
   sudo -v
   while true; do sudo -n true; sleep 60; kill -0 "$$" || exit; done 2>/dev/null &
-fi
 
-# -----------------------------------------------------------------------------
-# Homebrew & Managed Packages
-# -----------------------------------------------------------------------------
+  # Homebrew — install it, or refresh it (update + cleanup) when already present.
+  if ! $BREW_OK; then
+    echo | /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
-if ! $BREW_OK && ! $FAST; then
-  echo | /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+    PREFIX="$(brew_prefix)"
+    SHELLENV_LINE="eval \"\$(${PREFIX}/bin/brew shellenv)\""
+    echo >> "$HOME/.zprofile"
+    echo "$SHELLENV_LINE" >> "$HOME/.zprofile"
+    eval "$("${PREFIX}/bin/brew" shellenv)"
+  fi
 
+  # Ensure brew is in PATH even if already installed
   PREFIX="$(brew_prefix)"
-  SHELLENV_LINE="eval \"\$(${PREFIX}/bin/brew shellenv)\""
-  echo >> "$HOME/.zprofile"
-  echo "$SHELLENV_LINE" >> "$HOME/.zprofile"
-  eval "$("${PREFIX}/bin/brew" shellenv)"
-fi
+  eval "$("${PREFIX}/bin/brew" shellenv)" 2>/dev/null || true
 
-# Ensure brew is in PATH even if already installed
-PREFIX="$(brew_prefix)"
-eval "$("${PREFIX}/bin/brew" shellenv)" 2>/dev/null || true
+  # Update a pre-existing install, but don't not upgrade pre-existing packages
+  # that are not related to us.
+  if $BREW_OK; then
+    brew update
+    brew cleanup
+  fi
 
-
-if ! $FAST; then
+  # Core managed packages
   brew install --adopt        $CORE_FORMULAE
   brew install --cask --adopt $CORE_CASKS
   for pkg in $CORE_UV; do uv tool install "$pkg" --upgrade; done
-fi
 
-# Ensure uv-installed CLI tools (~/.local/bin) are on PATH. `uv tool
-# update-shell` detects the active shell and updates the right profile (safer
-# than hardcoding ~/.zprofile). Idempotent. Export covers the current session.
-if command -v uv &>/dev/null; then
-  uv tool update-shell || true
-fi
-export PATH="$HOME/.local/bin:$PATH"
+  # Ensure uv-installed CLI tools (~/.local/bin) are on PATH. `uv tool
+  # update-shell` detects the active shell and updates the right profile (safer
+  # than hardcoding ~/.zprofile). Idempotent. Export covers the current session.
+  if command -v uv &>/dev/null; then
+    uv tool update-shell || true
+  fi
+  export PATH="$HOME/.local/bin:$PATH"
 
-if $FULL && ! $FAST; then
-  brew install --adopt        $FULL_FORMULAE
-  brew install --cask --adopt $FULL_CASKS
-fi
-
-# -----------------------------------------------------------------------------
-# Premiere plugins
-# -----------------------------------------------------------------------------
-# Mister Horse's Product Manager is the app that installs & updates Animation
-# Composer (and the rest of the Mister Horse plugins) into Premiere/After
-# Effects. We download the Product Manager installer and run it; Animation
-# Composer itself is then installed from within the app on first launch.
-
-if $PREMIERE_OK && ! $FAST; then
-  PM_DMG="$HOME/Downloads/MisterHorseProductManager.dmg"
-  curl -fsSL -o "$PM_DMG" "https://misterhorse.com/downloads/product-manager/osx"
-  VOL="$(hdiutil attach "$PM_DMG" -nobrowse | grep -o '/Volumes/.*' | head -1 || true)"
-  PM_APP="$(find "$VOL" -maxdepth 1 -name '*.app' 2>/dev/null | head -1 || true)"
-  [ -n "$PM_APP" ] && sudo cp -R "$PM_APP" /Applications/
-  [ -n "$VOL" ] && hdiutil detach "$VOL" -quiet
-
-  # Flicker Free — Digital Anarchy's deflicker plugin. The DMG holds a .pkg we
-  # install straight to the system; the plugin then shows up in Premiere/AE.
-  FF_DMG="$HOME/Downloads/flickerfree_229_AE.dmg"
-  curl -fsSL -o "$FF_DMG" "https://www.digitalanarchy.com/downloads/flickerfree_229_AE.dmg"
-  FF_VOL="$(hdiutil attach "$FF_DMG" -nobrowse | grep -o '/Volumes/.*' | head -1 || true)"
-  FF_PKG="$(find "$FF_VOL" -maxdepth 1 -name '*.pkg' 2>/dev/null | head -1 || true)"
-  [ -n "$FF_PKG" ] && sudo installer -pkg "$FF_PKG" -target /
-  [ -n "$FF_VOL" ] && hdiutil detach "$FF_VOL" -quiet
-fi
-
-# -----------------------------------------------------------------------------
-# Pro Video Formats
-# -----------------------------------------------------------------------------
-
-if ! $PVF_OK && ! $FAST; then
-  DMG_URL="https://updates.cdn-apple.com/2026/macos/072-84099-20260127-5022F0FE-82CF-44E9-B96D-430E73501EBA/ProVideoFormats.dmg"
-  DMG_PATH="$HOME/Downloads/ProVideoFormats.dmg"
-
-  if [ ! -f "$DMG_PATH" ]; then
-    curl -o "$DMG_PATH" "$DMG_URL"
+  # Full-only managed packages
+  if $FULL; then
+    brew install --adopt        $FULL_FORMULAE
+    brew install --cask --adopt $FULL_CASKS
   fi
 
-  hdiutil attach "$DMG_PATH" -nobrowse
-  sudo installer -pkg "/Volumes/Pro Video Formats/ProVideoFormats.pkg" -target /
-  hdiutil detach "/Volumes/Pro Video Formats" -quiet
-  rm "$DMG_PATH"
-fi
+  # Premiere plugins — Mister Horse's Product Manager installs & updates Animation
+  # Composer (and the other Mister Horse plugins) into Premiere/After Effects. We
+  # download the Product Manager installer and run it; Animation Composer itself is
+  # then installed from within the app on first launch.
+  if $PREMIERE_OK; then
+    PM_DMG="$HOME/Downloads/MisterHorseProductManager.dmg"
+    curl -fsSL -o "$PM_DMG" "https://misterhorse.com/downloads/product-manager/osx"
+    VOL="$(hdiutil attach "$PM_DMG" -nobrowse | grep -o '/Volumes/.*' | head -1 || true)"
+    PM_APP="$(find "$VOL" -maxdepth 1 -name '*.app' 2>/dev/null | head -1 || true)"
+    [ -n "$PM_APP" ] && sudo cp -R "$PM_APP" /Applications/
+    [ -n "$VOL" ] && hdiutil detach "$VOL" -quiet
 
-# -----------------------------------------------------------------------------
-# LUTs
-# -----------------------------------------------------------------------------
-# Download every LUT in src/data/LUTs into ~/Downloads/LUTs (skipped --fast).
-# The file list comes from the GitHub contents API, so new LUTs are picked up
-# automatically without editing this script.
+    # Flicker Free — Digital Anarchy's deflicker plugin. The DMG holds a .pkg we
+    # install straight to the system; the plugin then shows up in Premiere/AE.
+    FF_DMG="$HOME/Downloads/flickerfree_229_AE.dmg"
+    curl -fsSL -o "$FF_DMG" "https://www.digitalanarchy.com/downloads/flickerfree_229_AE.dmg"
+    FF_VOL="$(hdiutil attach "$FF_DMG" -nobrowse | grep -o '/Volumes/.*' | head -1 || true)"
+    FF_PKG="$(find "$FF_VOL" -maxdepth 1 -name '*.pkg' 2>/dev/null | head -1 || true)"
+    [ -n "$FF_PKG" ] && sudo installer -pkg "$FF_PKG" -target /
+    [ -n "$FF_VOL" ] && hdiutil detach "$FF_VOL" -quiet
+  fi
 
-if ! $FAST; then
+  # Pro Video Formats
+  if ! $PVF_OK; then
+    DMG_URL="https://updates.cdn-apple.com/2026/macos/072-84099-20260127-5022F0FE-82CF-44E9-B96D-430E73501EBA/ProVideoFormats.dmg"
+    DMG_PATH="$HOME/Downloads/ProVideoFormats.dmg"
+
+    if [ ! -f "$DMG_PATH" ]; then
+      curl -o "$DMG_PATH" "$DMG_URL"
+    fi
+
+    hdiutil attach "$DMG_PATH" -nobrowse
+    sudo installer -pkg "/Volumes/Pro Video Formats/ProVideoFormats.pkg" -target /
+    hdiutil detach "/Volumes/Pro Video Formats" -quiet
+    rm "$DMG_PATH"
+  fi
+
+  # LUTs — download every LUT in src/data/LUTs into ~/Downloads/LUTs. The file
+  # list comes from the GitHub contents API, so new LUTs are picked up
+  # automatically without editing this script.
   LUT_DIR="$HOME/Downloads/LUTs"
   LUT_API="https://api.github.com/repos/lucuma13/load/contents/src/data/LUTs?ref=main"
   mkdir -p "$LUT_DIR"
@@ -518,25 +517,37 @@ if ! $FAST; then
   for url in $LUT_URLS; do
     (cd "$LUT_DIR" && curl -fsSL -O "$url")
   done
-fi
+
+}
 
 # -----------------------------------------------------------------------------
-# Homebrew maintenance — refresh catalog, upgrade everything, prune old versions
+# Dispatch — run_fast inline; the bare command then hands off to a Full pass,
+# and run_slow does the downloads/installs.
 # -----------------------------------------------------------------------------
 
-if ! $FAST && command -v brew &>/dev/null; then
-  brew update
-  brew upgrade
-  brew cleanup
+if $RUN_FAST; then run_fast; fi
+
+if $AUTO; then
+  # Fast pass finished. Only now save the script to a temp file — so nothing is
+  # left on disk if the user stops here — and run the Full pass from it.
+  exec 3<>/dev/tty
+  printf '%s' "  Fast loading is complete. Press enter to continue on FULL mode " >&3
+  read -r _ <&3 || true
+  exec 3>&-
+  TMP="$(mktemp -t load-mac).sh"
+  curl -fsSL "$SELF_URL" -o "$TMP"
+  export LOAD_FROM_FAST=1
+  exec bash "$TMP" --full
 fi
+
+if $RUN_SLOW; then run_slow; fi
 
 # -----------------------------------------------------------------------------
 # Summary
 # -----------------------------------------------------------------------------
 
-
 echo ""
-echo "  You're ready to roll! 🛼"
+echo "  🛼  You're ready to roll!"
 echo ""
 echo "  ⚠️  Please restart the computer for system prefs to take effect"
 echo ""

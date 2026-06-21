@@ -1,7 +1,7 @@
 # Tests for Apply-PremierePrefs and Get-WorkspaceName in src/load-win.ps1.
 # The script is sourced with $env:LOAD_LIB so only its functions load (no installer).
 #
-# Run:  Invoke-Pester tests\premiere.Tests.ps1
+# Run:  Invoke-Pester tests\windows_premiere.Tests.ps1
 
 BeforeAll {
     $env:LOAD_LIB = "1"
@@ -9,20 +9,28 @@ BeforeAll {
     $env:LOAD_LIB = $null
 }
 
-Describe "Apply-PremierePrefs (Premiere 25.0)" {
+# Discover every captured version; adding a premiere_pro_* fixture dir is enough.
+$PremiereVersions = Get-ChildItem "$PSScriptRoot/fixtures" -Directory -Filter 'premiere_pro_*' |
+    Sort-Object Name | ForEach-Object {
+        @{ Version = ($_.Name -replace '^premiere_pro_v?', ''); Dir = $_.Name }
+    }
+
+# The prefs format is Premiere-version-dependent (not platform-dependent), so
+# these run against every captured version.
+Describe "Apply-PremierePrefs (Premiere <Version>)" -ForEach $PremiereVersions {
     BeforeEach {
-        $fixture = "$PSScriptRoot\fixtures\premiere_pro_v25.0\Adobe Premiere Pro Prefs_truncated"
+        $fixture = "$PSScriptRoot\fixtures\$Dir\Adobe Premiere Pro Prefs_truncated"
         $prefs   = Join-Path $TestDrive "prefs"
         Copy-Item $fixture $prefs
     }
 
     It "shortcut set is activated" {
-        Apply-PremierePrefs $prefs "Luis_Mengo_25.1_WINDOWS.kys" "LGG - Single monitor"
-        Get-Content $prefs -Raw | Should -Match '<FE\.Prefs\.Shortcuts\.Filename>Luis_Mengo_25\.1_WINDOWS\.kys</FE\.Prefs\.Shortcuts\.Filename>'
+        Apply-PremierePrefs $prefs "LGG_25.1_WINDOWS.kys" "LGG - Single monitor"
+        Get-Content $prefs -Raw | Should -Match '<FE\.Prefs\.Shortcuts\.Filename>LGG_25\.1_WINDOWS\.kys</FE\.Prefs\.Shortcuts\.Filename>'
     }
 
     It "workspace is activated, spaces preserved" {
-        Apply-PremierePrefs $prefs "Luis_Mengo_25.1_WINDOWS.kys" "LGG - Single monitor"
+        Apply-PremierePrefs $prefs "LGG_25.1_WINDOWS.kys" "LGG - Single monitor"
         Get-Content $prefs -Raw | Should -Match '<FE\.Application\.LastWorkspaceName>LGG - Single monitor</FE\.Application\.LastWorkspaceName>'
     }
 
@@ -74,9 +82,9 @@ Describe "Apply-PremierePrefs (Premiere 25.0)" {
     }
 
     It "idempotent: second run is byte-identical to first" {
-        Apply-PremierePrefs $prefs "Luis_Mengo_25.1_WINDOWS.kys" "LGG - Single monitor"
+        Apply-PremierePrefs $prefs "LGG_25.1_WINDOWS.kys" "LGG - Single monitor"
         $hash1 = (Get-FileHash $prefs -Algorithm SHA256).Hash
-        Apply-PremierePrefs $prefs "Luis_Mengo_25.1_WINDOWS.kys" "LGG - Single monitor"
+        Apply-PremierePrefs $prefs "LGG_25.1_WINDOWS.kys" "LGG - Single monitor"
         $hash2 = (Get-FileHash $prefs -Algorithm SHA256).Hash
         $hash2 | Should -Be $hash1
     }
@@ -85,7 +93,7 @@ Describe "Apply-PremierePrefs (Premiere 25.0)" {
         $content = Get-Content $prefs -Raw
         $content = $content -replace 'TL\.PREFLinkedSelectionState', 'TL.PREFLinkedSelectionStateRENAMED'
         Set-Content $prefs $content -Encoding UTF8 -NoNewline
-        $output = Apply-PremierePrefs $prefs "Luis_Mengo_25.1_WINDOWS.kys" "LGG - Single monitor" 6>&1 | Out-String
+        $output = Apply-PremierePrefs $prefs "LGG_25.1_WINDOWS.kys" "LGG - Single monitor" 6>&1 | Out-String
         $output | Should -Match 'TL\.PREFLinkedSelectionState'
         $output | Should -Match 'fresh install'
         { [xml](Get-Content $prefs -Raw) } | Should -Not -Throw
@@ -94,9 +102,9 @@ Describe "Apply-PremierePrefs (Premiere 25.0)" {
     }
 }
 
-Describe "Get-WorkspaceName" {
+Describe "Get-WorkspaceName (Premiere <Version>)" -ForEach $PremiereVersions {
     It "extracts the UserName" {
-        $ws = "$PSScriptRoot/fixtures/premiere_pro_v25.0/UserWorkspace_truncated.xml"
+        $ws = "$PSScriptRoot/fixtures/$Dir/UserWorkspace_truncated.xml"
         Get-WorkspaceName $ws | Should -Be 'LGG - Single monitor'
     }
 }
@@ -123,8 +131,7 @@ Describe "load-win.ps1 encoding (Windows PowerShell 5.1 safe)" {
     }
 }
 
-# These hit the network to confirm the hard-coded plugin installer URLs (not
-# winget-managed, so nothing else validates them) are still live. Exclude them
+# These hit the network to confirm the hard-coded plugin installer URLs are still live. Exclude them
 # on an offline run with:  Invoke-Pester -ExcludeTag Live
 Describe "Plugin download links" -Tag 'Live' {
     $links = @(
@@ -140,5 +147,46 @@ Describe "Plugin download links" -Tag 'Live' {
             $resp = Invoke-WebRequest -Uri $Url -Headers @{ Range = 'bytes=0-0' } -MaximumRedirection 5 -UseBasicParsing -TimeoutSec 30
         }
         [int]$resp.StatusCode | Should -BeIn @(200, 206)
+    }
+}
+
+# Confirms every pinned winget id still resolves on the winget source - catches an
+# upstream rename/delisting or a local typo before it silently no-ops an install.
+# Hits the network (tagged Live); skipped where winget itself is unavailable.
+Describe "winget package ids resolve" -Tag 'Live' {
+    BeforeDiscovery {
+        $env:LOAD_LIB = "1"
+        . "$PSScriptRoot\..\src\load-win.ps1"
+        $env:LOAD_LIB = $null
+        $wingetIds = @($CORE_PKGS + $FULL_PKGS)
+    }
+
+    It "<_> is found on winget" -ForEach $wingetIds {
+        if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+            Set-ItResult -Skipped -Because "winget is not installed"
+            return
+        }
+        winget show --id $_ --exact --source winget --accept-source-agreements --disable-interactivity *> $null
+        $LASTEXITCODE | Should -Be 0 -Because "'$_' did not resolve (renamed, delisted, or mistyped?)"
+    }
+}
+
+# The uv tools install from PyPI, so existence is a PyPI lookup (200 = project
+# exists, 404 = renamed/delisted/mistyped). Hits the network (tagged Live).
+Describe "uv tool ids resolve on PyPI" -Tag 'Live' {
+    BeforeDiscovery {
+        $env:LOAD_LIB = "1"
+        . "$PSScriptRoot\..\src\load-win.ps1"
+        $env:LOAD_LIB = $null
+        $uvTools = @($CORE_UV)
+    }
+
+    It "<_> exists on PyPI" -ForEach $uvTools {
+        try {
+            $resp = Invoke-WebRequest -Uri "https://pypi.org/pypi/$_/json" -Method Head -MaximumRedirection 5 -UseBasicParsing -TimeoutSec 30
+        } catch {
+            $resp = Invoke-WebRequest -Uri "https://pypi.org/pypi/$_/json" -MaximumRedirection 5 -UseBasicParsing -TimeoutSec 30
+        }
+        [int]$resp.StatusCode | Should -Be 200 -Because "'$_' did not resolve on PyPI (renamed, delisted, or mistyped?)"
     }
 }

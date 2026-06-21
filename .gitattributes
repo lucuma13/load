@@ -1,0 +1,5 @@
+# Premiere prefs/keyboard files are byte-sensitive; never normalize EOLs.
+tests/fixtures/** -text
+src/data/*.kys    -text
+src/data/*.xml    -text
+src/data/*.ahk    -text

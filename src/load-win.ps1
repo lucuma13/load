@@ -1,6 +1,17 @@
-# Windows workstation setup script
-# Usage: Invoke-WebRequest -Uri "https://raw.githubusercontent.com/lucuma13/load/main/src/load-win.ps1" -UseBasicParsing | Invoke-Expression
-# Flags: --full  --fast  --dry-run
+<#
+.SYNOPSIS
+Windows workstation setup script
+
+.NOTES
+Copyright (c) 2026 Luis Gomez Gutierrez
+
+.EXAMPLE
+# With interactive menu:
+
+.EXAMPLE
+# With bypass execution policy and flags (append --fast/--full/--dry-run):
+#>
+
 
 $ErrorActionPreference = "Stop"
 
@@ -9,6 +20,30 @@ New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
 
 function Mark-Done { param($step); New-Item -ItemType File -Force -Path "$WorkDir\$step" | Out-Null }
 function Is-Done   { param($step); Test-Path "$WorkDir\$step" }
+
+# Find-AhkExe - locate an installed AutoHotkey interpreter, or return $null. Used
+# both to preview (is AutoHotkey present?) and to run the macros. The winget
+# install layout varies by version, so try PATH, the common install paths, then a
+# recursive search preferring the 64-bit interpreter over the launcher.
+function Find-AhkExe {
+    $exe = Get-Command AutoHotkey.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
+    if (-not $exe) {
+        $exe = @(
+            "$env:ProgramFiles\AutoHotkey\v2\AutoHotkey64.exe",
+            "$env:ProgramFiles\AutoHotkey\v2\AutoHotkey32.exe",
+            "$env:ProgramFiles\AutoHotkey\AutoHotkey64.exe",
+            "$env:ProgramFiles\AutoHotkey\AutoHotkey.exe",
+            "${env:ProgramFiles(x86)}\AutoHotkey\v2\AutoHotkey64.exe",
+            "${env:ProgramFiles(x86)}\AutoHotkey\AutoHotkey.exe"
+        ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+    }
+    if (-not $exe) {
+        $exe = Get-ChildItem "$env:ProgramFiles\AutoHotkey" -Recurse -Filter "AutoHotkey*.exe" -ErrorAction SilentlyContinue |
+               Sort-Object { $_.Name -notmatch '64' } |
+               Select-Object -First 1 -ExpandProperty FullName
+    }
+    return $exe
+}
 
 # Get-WorkspaceName <ws_file> - return the workspace display name from the XML file,
 # stored under the UserName key.
@@ -75,7 +110,6 @@ function Apply-PremierePrefs {
     # Auto-save: on, every 5 minutes
     if (-not (Set-PrefNode $prefs "BE.Prefs.AutoSave.DoSave"   "true")) { $missing += "BE.Prefs.AutoSave.DoSave" }
     if (-not (Set-PrefNode $prefs "BE.Prefs.AutoSave.Interval" "5"))    { $missing += "BE.Prefs.AutoSave.Interval" }
-    Set-PrefNode $prefs "BE.Prefs.AutoSave.Interval" "5"    | Out-Null
 
     # Timeline toggles: Link Selection + Display Settings (wrench menu)
     foreach ($node in @(
@@ -138,6 +172,28 @@ function Set-FileAssociation {
     $parent.Close()
 }
 
+# winget package lists. Kept above the guard so the test suite can source them and
+# confirm every id still resolves on winget (catches renames/delisting/typos).
+$CORE_PKGS = @(
+    "astral-sh.uv",
+    "MediaArea.MediaInfo",
+    "MediaArea.MediaInfo.GUI",
+    "OliverBetz.ExifTool",
+    "VideoLAN.VLC",
+    "ZhornSoftware.Caffeine",
+    "Gyan.FFmpeg"
+)
+$FULL_PKGS = @(  # Add if needed: "AxiomaticSystems.Bento4", "wez.atomicparsley"
+    "AutoHotkey.AutoHotkey",
+    "Google.Chrome",
+    "Adobe.Acrobat.Reader.64-bit",
+    "Audacity.Audacity"
+)
+$CORE_UV = @(
+    "triplecheck",
+    "mhl-suite"
+)
+
 # Sourced as a library (tests set $env:LOAD_LIB): stop here, run nothing below.
 if ($env:LOAD_LIB) { return }
 
@@ -150,7 +206,7 @@ $FAST    = $args -contains "--fast"
 $DRY_RUN = $args -contains "--dry-run"
 
 # No flag given - run the Fast pass inline now (quick config, nothing saved to
-# disk), then pause and hand off to the Full pass (see the Done section, which
+# disk), then pause and hand off to the Full pass (see the Dispatch section, which
 # only then downloads the script to a temp file). Bail if there's no interactive
 # console (e.g. CI) so we don't run a heavy install on an unattended box.
 $AUTO = $false
@@ -163,6 +219,13 @@ if (-not ($FULL -or $FAST -or $DRY_RUN)) {
     $FAST = $true
 }
 
+# Phase gates. run_fast applies lightweight config; run_slow does the
+# downloads/installs. The bare command runs Fast inline then hands off to a Full
+# pass (marked with LOAD_FROM_FAST) that runs Slow only - so Fast is skipped there
+# to avoid repeating the same actions.
+$RUN_FAST = -not $env:LOAD_FROM_FAST
+$RUN_SLOW = -not $FAST
+
 # -----------------------------------------------------------------------------
 # Preflight
 # -----------------------------------------------------------------------------
@@ -171,7 +234,8 @@ $PREMIERE_OK      = Test-Path "$HOME\Documents\Adobe\Premiere Pro"
 # Premiere rewrites its prefs on exit - activating a set while it's running would get clobbered.
 $PREMIERE_RUNNING = $PREMIERE_OK -and ($null -ne (Get-Process -Name "Adobe Premiere Pro*" -ErrorAction SilentlyContinue))
 $WINGET_OK        = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
-$AHK_OK      = Is-Done "ahk"
+$AHK_OK        = Is-Done "ahk"
+$AHK_INSTALLED = [bool](Find-AhkExe)   # AutoHotkey already on the machine?
 
 $KB_Speed = (Get-ItemProperty -Path "HKCU:\Control Panel\Keyboard" -Name "KeyboardSpeed" -ErrorAction SilentlyContinue).KeyboardSpeed
 $KB_Delay = (Get-ItemProperty -Path "HKCU:\Control Panel\Keyboard" -Name "KeyboardDelay" -ErrorAction SilentlyContinue).KeyboardDelay
@@ -199,9 +263,14 @@ Write-Host ""
 
 # Premiere Pro
 if ($PREMIERE_OK) {
-    Would-Run  "Premiere Pro shortcuts & workspace"
-    if ($PREMIERE_RUNNING) { Would-Skip "Premiere Pro preferences - Premiere Pro is open" }
-    else                   { Would-Run  "Premiere Pro preferences" }
+    if (-not $RUN_FAST) {
+        Already-Done "Premiere Pro shortcuts & workspace"
+        Already-Done "Premiere Pro preferences"
+    } else {
+        Would-Run  "Premiere Pro shortcuts & workspace"
+        if ($PREMIERE_RUNNING) { Would-Skip "Premiere Pro preferences - Premiere Pro is open" }
+        else                   { Would-Run  "Premiere Pro preferences" }
+    }
     if ($FAST) { Would-Skip "Premiere Pro plugins (--fast)" }
     else       { Would-Run  "Premiere Pro plugins - Animation Composer, Flicker Free" }
 } else {
@@ -210,31 +279,12 @@ if ($PREMIERE_OK) {
     Would-Skip "Premiere Pro plugins - not installed"
 }
 
-# Keyboard preferences
-if ($KB_OK) { Already-Done "Keyboard preferences" }
-else        { Would-Run    "Keyboard preferences" }
+# Keyboard preferences (lightweight config - skipped in the Full hand-off)
+if (-not $RUN_FAST) { Already-Done "Keyboard preferences" }
+elseif ($KB_OK)       { Already-Done "Keyboard preferences" }
+else                  { Would-Run    "Keyboard preferences" }
 
-# winget packages
-$CORE_PKGS = @(
-    "astral-sh.uv",
-    "MediaArea.MediaInfo",
-    "MediaArea.MediaInfo.GUI",
-    "OliverBetz.ExifTool",
-    "VideoLAN.VLC",
-    "ZhornSoftware.Caffeine",
-    "Gyan.FFmpeg"
-)
-$FULL_PKGS = @(  # Add if needed: "AxiomaticSystems.Bento4", "wez.atomicparsley"
-    "AutoHotkey.AutoHotkey",
-    "Google.Chrome",
-    "Adobe.Acrobat.Reader.64-bit",
-    "Audacity.Audacity"
-)
-$CORE_UV = @(
-    "triplecheck",
-    "mhl-suite"
-)
-
+# winget packages (lists defined above the library guard)
 if ($FAST) {
     $all = $CORE_PKGS + $CORE_UV
     if ($FULL) { $all += $FULL_PKGS }
@@ -260,10 +310,12 @@ if ($VLC_IS_DEFAULT)                           { Already-Done "VLC as default vi
 elseif ($FAST -and -not (Test-Path $VLC_EXE)) { Would-Skip   "VLC as default video player - VLC not installed" }
 else                                           { Would-Run    "VLC as default video player" }
 
-# AHK shortcuts
-if ($AHK_OK)   { Already-Done "AHK shortcuts" }
-elseif ($FAST) { Would-Skip   "AHK shortcuts (--fast)" }
-else           { Would-Run    "AHK shortcuts" }
+# AHK shortcuts - applied whenever AutoHotkey is present. In --fast we only have a
+# pre-installed AutoHotkey to work with (installing it is a Full-pass step).
+if ($AHK_OK)            { Already-Done "AHK shortcuts" }
+elseif ($AHK_INSTALLED) { Would-Run    "AHK shortcuts" }
+elseif ($FAST)          { Would-Skip   "AHK shortcuts (--fast) - AutoHotkey not installed" }
+else                    { Would-Run    "AHK shortcuts" }
 
 # LUTs
 if ($FAST) { Would-Skip "LUTs (--fast)" }
@@ -272,68 +324,102 @@ else       { Would-Run  "LUTs" }
 Write-Host ""
 if ($DRY_RUN) { exit 0 }
 
-# The lightweight config below runs before any slow download/install so that an
-# interrupted run still leaves the quick changes applied. AHK is the exception -
-# it needs AutoHotkey (a managed package), so it follows the package install.
-
 # -----------------------------------------------------------------------------
-# Premiere Pro shortcuts & workspace
+# Phase functions
 # -----------------------------------------------------------------------------
+# run_fast - lightweight preference changes only (no downloads/installs).
+# run_slow - everything that downloads or installs. VLC-as-default is config that
+# needs VLC present, so Set-VlcDefault runs in both phases (idempotent: it
+# re-checks the current default and no-ops once VLC already owns the types). The
+# bare command runs run_fast inline then hands off to a Full pass that runs
+# run_slow; --fast runs run_fast only and --full runs both.
 
-if ($PREMIERE_OK) {
-    $KYS_FILE = "Luis_Mengo_25.1_WINDOWS.kys"
-    $WS_FILE  = "UserWorkspace_LGG.xml"
-
-    foreach ($profileDir in Get-ChildItem "$HOME\Documents\Adobe\Premiere Pro\*\Profile-*" -Directory -ErrorAction SilentlyContinue) {
-        $prefs   = Join-Path $profileDir.FullName "Adobe Premiere Pro Prefs"
-        $winDir  = Join-Path $profileDir.FullName "Win"
-        $layouts = Join-Path $profileDir.FullName "Layouts"
-
-        New-Item -ItemType Directory -Force -Path $winDir  | Out-Null
-        New-Item -ItemType Directory -Force -Path $layouts | Out-Null
-
-        # Drop the shortcuts into the Profile's Win folder (where Premiere reads custom sets)
-        curl.exe -s --output-dir $winDir  -O "https://raw.githubusercontent.com/lucuma13/load/refs/heads/main/src/data/$KYS_FILE"
-        # Drop the workspace into Layouts. Premiere auto-registers it on launch.
-        curl.exe -s --output-dir $layouts -O "https://raw.githubusercontent.com/lucuma13/load/refs/heads/main/src/data/$WS_FILE"
-        $wsName = Get-WorkspaceName (Join-Path $layouts $WS_FILE)
-
-        if ($PREMIERE_RUNNING) {
-            Write-Host "  [warn] Premiere Pro is running - files dropped but not activated"
-        } elseif (Test-Path $prefs) {
-            Apply-PremierePrefs $prefs $KYS_FILE $wsName
-        }
+function Set-VlcDefault {
+    # Point Explorer's per-extension UserChoice at VLC's registered ProgIds
+    # (VLC.<ext>, created by the VLC installer). No-op if VLC isn't installed or
+    # already owns .mp4; re-queries so it's safe to call from both phases.
+    if (-not (Test-Path $VLC_EXE)) { return }
+    $cur = (Get-ItemProperty "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.mp4\UserChoice" -ErrorAction SilentlyContinue).ProgId
+    if ($cur -eq 'VLC.mp4') { return }
+    foreach ($ext in @('mp4','m4v','mov','mkv','avi','wmv','flv','webm','mpg','mpeg','m2ts','mts','ts','vob','mxf')) {
+        try { Set-FileAssociation ".$ext" "VLC.$ext" } catch {}
     }
 }
 
-# -----------------------------------------------------------------------------
-# Keyboard preferences
-# -----------------------------------------------------------------------------
+function Install-AhkMacros {
+    # Download the AHK macro script and launch it (elevated) under the installed
+    # AutoHotkey. No-op once done, or when AutoHotkey isn't present.
+    if (Is-Done "ahk") { return }
+    $ahkExe = Find-AhkExe
+    if (-not $ahkExe) {
+        Write-Host "  [warn] AutoHotkey not found - skipping AHK shortcuts"
+        return
+    }
+    $ahkPath = "$WorkDir\MacKeyboard_LGG.ahk"
+    curl.exe -s -o $ahkPath "https://raw.githubusercontent.com/lucuma13/load/refs/heads/main/src/data/MacKeyboard_LGG.ahk"
+    Start-Process $ahkExe -ArgumentList $ahkPath -Verb RunAs
+    Mark-Done "ahk"
+}
 
-if (-not $KB_OK) {
-    # Persist across reboots
-    Set-ItemProperty -Path "HKCU:\Control Panel\Keyboard" -Name "KeyboardSpeed" -Value 31
-    Set-ItemProperty -Path "HKCU:\Control Panel\Keyboard" -Name "KeyboardDelay" -Value 0
+function run_fast {
+    # Premiere Pro shortcuts & workspace
+    if ($PREMIERE_OK) {
+        $KYS_FILE = "LGG_25.1_WINDOWS.kys"
+        $WS_FILE  = "UserWorkspace_LGG.xml"
 
-    # Apply to the active session immediately (no logoff needed)
-    if (-not ([System.Management.Automation.PSTypeName]'KeyboardConfig').Type) {
-        Add-Type -TypeDefinition @"
+        foreach ($profileDir in Get-ChildItem "$HOME\Documents\Adobe\Premiere Pro\*\Profile-*" -Directory -ErrorAction SilentlyContinue) {
+            $prefs   = Join-Path $profileDir.FullName "Adobe Premiere Pro Prefs"
+            $winDir  = Join-Path $profileDir.FullName "Win"
+            $layouts = Join-Path $profileDir.FullName "Layouts"
+
+            New-Item -ItemType Directory -Force -Path $winDir  | Out-Null
+            New-Item -ItemType Directory -Force -Path $layouts | Out-Null
+
+            # Drop the shortcuts into the Profile's Win folder (where Premiere reads custom sets)
+            curl.exe -s --output-dir $winDir  -O "https://raw.githubusercontent.com/lucuma13/load/refs/heads/main/src/data/$KYS_FILE"
+            # Drop the workspace into Layouts. Premiere auto-registers it on launch.
+            curl.exe -s --output-dir $layouts -O "https://raw.githubusercontent.com/lucuma13/load/refs/heads/main/src/data/$WS_FILE"
+            $wsName = Get-WorkspaceName (Join-Path $layouts $WS_FILE)
+
+            if ($PREMIERE_RUNNING) {
+                Write-Host "  [warn] Premiere Pro is running - files dropped but not activated"
+            } elseif (Test-Path $prefs) {
+                Apply-PremierePrefs $prefs $KYS_FILE $wsName
+            }
+        }
+    }
+
+    # Keyboard preferences
+    if (-not $KB_OK) {
+        # Persist across reboots
+        Set-ItemProperty -Path "HKCU:\Control Panel\Keyboard" -Name "KeyboardSpeed" -Value 31
+        Set-ItemProperty -Path "HKCU:\Control Panel\Keyboard" -Name "KeyboardDelay" -Value 0
+
+        # Apply to the active session immediately (no logoff needed)
+        if (-not ([System.Management.Automation.PSTypeName]'KeyboardConfig').Type) {
+            Add-Type -TypeDefinition @"
 using System.Runtime.InteropServices;
 public class KeyboardConfig {
     [DllImport("user32.dll", SetLastError = true)]
     public static extern bool SystemParametersInfo(uint uiAction, uint uiParam, uint pvParam, uint fWinIni);
 }
 "@
+        }
+        [KeyboardConfig]::SystemParametersInfo(0x0017, 0, 0, 0)  | Out-Null  # SPI_SETKEYBOARDDELAY
+        [KeyboardConfig]::SystemParametersInfo(0x000B, 31, 0, 0) | Out-Null  # SPI_SETKEYBOARDSPEED
     }
-    [KeyboardConfig]::SystemParametersInfo(0x0017, 0, 0, 0)  | Out-Null  # SPI_SETKEYBOARDDELAY
-    [KeyboardConfig]::SystemParametersInfo(0x000B, 31, 0, 0) | Out-Null  # SPI_SETKEYBOARDSPEED
+
+    # VLC as default video player - config that needs VLC present (see Set-VlcDefault)
+    Set-VlcDefault
+
+    # AHK macros - apply now if AutoHotkey is already installed (covers --fast on a
+    # machine that has it). On a Full run AutoHotkey is installed in run_slow, which
+    # applies them there instead - so only act here when it's already present.
+    if (Find-AhkExe) { Install-AhkMacros }
 }
 
-# -----------------------------------------------------------------------------
-# Managed packages
-# -----------------------------------------------------------------------------
-
-if (-not $FAST) {
+function run_slow {
+    # Managed packages
     foreach ($pkg in $CORE_PKGS) {
         winget install $pkg --accept-package-agreements --accept-source-agreements
     }
@@ -347,20 +433,19 @@ if (-not $FAST) {
     uv tool update-shell
     $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
                 [System.Environment]::GetEnvironmentVariable("Path", "User")
-}
 
-if ($FULL -and -not $FAST) {
-    foreach ($pkg in $FULL_PKGS) {
-        winget install $pkg --accept-package-agreements --accept-source-agreements
+    # Full-only managed packages
+    if ($FULL) {
+        foreach ($pkg in $FULL_PKGS) {
+            winget install $pkg --accept-package-agreements --accept-source-agreements
+        }
+        # Refresh PATH so newly installed tools (AutoHotkey, etc.) are available in this session
+        $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
+                    [System.Environment]::GetEnvironmentVariable("Path", "User")
     }
-    # Refresh PATH so newly installed tools (AutoHotkey, etc.) are available in this session
-    $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
-                [System.Environment]::GetEnvironmentVariable("Path", "User")
-}
 
-# Tell already-running apps to re-read the environment so the new PATH is picked
-# up without a logoff (this session is already refreshed above).
-if (-not $FAST) {
+    # Tell already-running apps to re-read the environment so the new PATH is picked
+    # up without a logoff (this session is already refreshed above).
     if (-not ([System.Management.Automation.PSTypeName]'Win32Env').Type) {
         Add-Type -TypeDefinition @"
 using System;
@@ -374,81 +459,44 @@ public class Win32Env {
     $HWND_BROADCAST = [IntPtr]0xffff
     [IntPtr]$res = [IntPtr]::Zero
     [Win32Env]::SendMessageTimeout($HWND_BROADCAST, 0x001A, [IntPtr]::Zero, "Environment", 2, 5000, [ref]$res) | Out-Null  # WM_SETTINGCHANGE
-}
 
-# -----------------------------------------------------------------------------
-# AHK macros (needs AutoHotkey, installed above with --full; skipped with --fast)
-# -----------------------------------------------------------------------------
+    # VLC as default video player - now that VLC is installed (covers a fresh machine)
+    Set-VlcDefault
 
-if (-not $AHK_OK -and -not $FAST) {
-    $ahkExe = Get-Command AutoHotkey.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
-    if (-not $ahkExe) {
-        $ahkExe = @(
-            "$env:ProgramFiles\AutoHotkey\v2\AutoHotkey64.exe",
-            "$env:ProgramFiles\AutoHotkey\v2\AutoHotkey32.exe",
-            "$env:ProgramFiles\AutoHotkey\AutoHotkey64.exe",
-            "$env:ProgramFiles\AutoHotkey\AutoHotkey.exe",
-            "${env:ProgramFiles(x86)}\AutoHotkey\v2\AutoHotkey64.exe",
-            "${env:ProgramFiles(x86)}\AutoHotkey\AutoHotkey.exe"
-        ) | Where-Object { Test-Path $_ } | Select-Object -First 1
-    }
-    if (-not $ahkExe) {
-        # Last resort: the winget install layout varies by version - search the tree
-        # and prefer the 64-bit interpreter over the launcher.
-        $ahkExe = Get-ChildItem "$env:ProgramFiles\AutoHotkey" -Recurse -Filter "AutoHotkey*.exe" -ErrorAction SilentlyContinue |
-                  Sort-Object { $_.Name -notmatch '64' } |
-                  Select-Object -First 1 -ExpandProperty FullName
-    }
-    if (-not $ahkExe) {
-        Write-Host "  [warn] AutoHotkey not found - skipping AHK shortcuts"
-    } else {
-        $ahkPath = "$WorkDir\MacKeyboard_LM.ahk"
-        curl.exe -s -o $ahkPath "https://raw.githubusercontent.com/lucuma13/load/refs/heads/main/src/data/MacKeyboard_LM.ahk"
-        Start-Process $ahkExe -ArgumentList $ahkPath -Verb RunAs
-        Mark-Done "ahk"
-    }
-}
+    # AHK macros - AutoHotkey was installed above on a Full run (or already present)
+    Install-AhkMacros
 
-# -----------------------------------------------------------------------------
-# Premiere plugins
-# -----------------------------------------------------------------------------
-# Mister Horse's Product Manager is the app that installs & updates Animation
-# Composer (and the rest of the Mister Horse plugins) into Premiere/After
-# Effects. We download the Product Manager installer and run it; Animation
-# Composer itself is then installed from within the app on first launch.
+    # Premiere plugins - Mister Horse's Product Manager installs & updates Animation
+    # Composer (and the other Mister Horse plugins) into Premiere/After Effects. We
+    # download the Product Manager installer and run it; Animation Composer itself is
+    # then installed from within the app on first launch.
+    if ($PREMIERE_OK) {
+        $pmPath = "$WorkDir\MisterHorseProductManager.msi"
+        curl.exe -fsSL -o $pmPath "https://misterhorse.com/downloads/product-manager/win"
+        $pm = Start-Process msiexec.exe -ArgumentList "/i `"$pmPath`" /qn" -Verb RunAs -Wait -PassThru
+        # Clean up the installer once it finished successfully (exit 0).
+        if ($pm.ExitCode -eq 0) { Remove-Item $pmPath -Force -ErrorAction SilentlyContinue }
 
-if ($PREMIERE_OK -and -not $FAST) {
-    $pmPath = "$WorkDir\MisterHorseProductManager.msi"
-    curl.exe -fsSL -o $pmPath "https://misterhorse.com/downloads/product-manager/win"
-    $pm = Start-Process msiexec.exe -ArgumentList "/i `"$pmPath`" /qn" -Verb RunAs -Wait -PassThru
-    # Clean up the installer once it finished successfully (exit 0).
-    if ($pm.ExitCode -eq 0) { Remove-Item $pmPath -Force -ErrorAction SilentlyContinue }
-
-    # Flicker Free - Digital Anarchy's deflicker plugin. The download is a zip
-    # wrapping the installer .exe; we extract it and run the installer.
-    $ffZip = "$WorkDir\flickerfree_229_AE.zip"
-    $ffDir = "$WorkDir\flickerfree_229_AE"
-    curl.exe -fsSL -o $ffZip "https://www.digitalanarchy.com/downloads/flickerfree_229_AE.zip"
-    Expand-Archive -Path $ffZip -DestinationPath $ffDir -Force
-    $ffExe = Get-ChildItem $ffDir -Filter *.exe | Select-Object -First 1
-    if ($ffExe) {
-        $ff = Start-Process $ffExe.FullName -Verb RunAs -Wait -PassThru
-        # Clean up the zip and extracted installer once it finished successfully.
-        if ($ff.ExitCode -eq 0) {
-            Remove-Item $ffZip -Force -ErrorAction SilentlyContinue
-            Remove-Item $ffDir -Recurse -Force -ErrorAction SilentlyContinue
+        # Flicker Free - Digital Anarchy's deflicker plugin. The download is a zip
+        # wrapping the installer .exe; we extract it and run the installer.
+        $ffZip = "$WorkDir\flickerfree_229_AE.zip"
+        $ffDir = "$WorkDir\flickerfree_229_AE"
+        curl.exe -fsSL -o $ffZip "https://www.digitalanarchy.com/downloads/flickerfree_229_AE.zip"
+        Expand-Archive -Path $ffZip -DestinationPath $ffDir -Force
+        $ffExe = Get-ChildItem $ffDir -Filter *.exe | Select-Object -First 1
+        if ($ffExe) {
+            $ff = Start-Process $ffExe.FullName -Verb RunAs -Wait -PassThru
+            # Clean up the zip and extracted installer once it finished successfully.
+            if ($ff.ExitCode -eq 0) {
+                Remove-Item $ffZip -Force -ErrorAction SilentlyContinue
+                Remove-Item $ffDir -Recurse -Force -ErrorAction SilentlyContinue
+            }
         }
     }
-}
 
-# -----------------------------------------------------------------------------
-# LUTs
-# -----------------------------------------------------------------------------
-# Download every LUT in src/data/LUTs into $WorkDir\LUTs (skipped --fast).
-# The file list comes from the GitHub contents API, so new LUTs are picked up
-# automatically without editing this script.
-
-if (-not $FAST) {
+    # LUTs - download every LUT in src/data/LUTs into $WorkDir\LUTs. The file list
+    # comes from the GitHub contents API, so new LUTs are picked up automatically
+    # without editing this script.
     $lutDir = "$WorkDir\LUTs"
     $lutApi = "https://api.github.com/repos/lucuma13/load/contents/src/data/LUTs?ref=main"
     New-Item -ItemType Directory -Force -Path $lutDir | Out-Null
@@ -465,8 +513,11 @@ if (-not $FAST) {
 }
 
 # -----------------------------------------------------------------------------
-# Done
+# Dispatch - run_fast inline; the bare command then hands off to a Full pass,
+# and run_slow does the downloads/installs.
 # -----------------------------------------------------------------------------
+
+if ($RUN_FAST) { run_fast }
 
 if ($AUTO) {
     # Fast pass finished. Only now save the script to a temp file - so nothing is
@@ -475,9 +526,12 @@ if ($AUTO) {
     $self = "$env:TEMP\load-win.ps1"
     Invoke-WebRequest -Uri "https://raw.githubusercontent.com/lucuma13/load/main/src/load-win.ps1" -UseBasicParsing |
         Set-Content $self -Encoding UTF8
+    $env:LOAD_FROM_FAST = "1"
     powershell -ExecutionPolicy Bypass -File $self --full
     exit $LASTEXITCODE
 }
+
+if ($RUN_SLOW) { run_slow }
 
 Write-Host ""
 Write-Host "  You're ready to roll!"

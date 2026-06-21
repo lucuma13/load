@@ -1,0 +1,30 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  bats:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # bats-support is pulled from its official git repo; npm records that
+      # source as ssh:// in the lockfile. CI has no GitHub SSH keys, so rewrite
+      # to https before installing.
+      - name: Fetch github git deps over https
+        run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+
+      - run: npm ci
+
+      - run: npm run test:ci
