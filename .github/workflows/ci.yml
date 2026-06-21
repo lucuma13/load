@@ -2,27 +2,41 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
-  bats-macos:
+  macos-bats:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Install bats-core
-        run: brew install bats-core
+
+      - uses: actions/setup-node@v6.4
+        with:
+          node-version: 26.3
+          cache: npm
+
+      # bats-support is pulled from its official git repo; npm records that
+      # source as ssh:// in the lockfile. CI has no GitHub SSH keys, so rewrite
+      # to https before installing.
+      - name: Fetch github git deps over https
+        run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+
+      - run: npm ci
+
       - name: Syntax check
         run: make check
-      - name: Run tests
-        run: make test
 
-  # Future: the Windows entrypoint (src/load-win.ps1) gets a symmetric Pester job
-  # once the Premiere activation logic is ported there. Mirrors the bats job:
-  #
-  # pester-windows:
-  #   runs-on: windows-latest
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - name: Run Pester
-  #       shell: pwsh
-  #       run: Invoke-Pester -Path tests -Output Detailed
+      - run: npm run test:ci
+
+  windows-pester:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Run Pester
+        shell: pwsh
+        run: Invoke-Pester -Path tests -Output Detailed -CI
