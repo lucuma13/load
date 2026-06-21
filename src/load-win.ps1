@@ -86,7 +86,7 @@ function Set-PrefNode {
 #       applied and the script needs updating.
 # Either way the file is left untouched for that node.
 function Apply-PremierePrefs {
-    param($prefs, $kysFile, $wsName)
+    param($prefs, $kysFile, $wsName, $version)
     $labelNames  = @('Violet','Iris','Caribbean','Lavender','Cerulean','Forest','Rose','Mango','Purple','Blue','Teal','Magenta','Tan','Green','Brown','Yellow')
     $labelColors = @('14717094','13408882','10016297','14910691','14597935','5814353','10776567','3909357','9896087','16727100','8421376','15151847','9814478','2191389','1262987','6611682')
     $missing = @()
@@ -113,20 +113,21 @@ function Apply-PremierePrefs {
     # Timeline toggles: Link Selection + Display Settings (wrench menu)
     foreach ($node in @(
         'TL.PREFLinkedSelectionState',
-        'be.Prefs.Timeline.Show.Video.Thumbnails',
-        'be.Prefs.Timeline.Show.Video.Names',
-        'be.Prefs.Timeline.Show.Audio.Waveforms',
-        'be.Prefs.Timeline.Show.Audio.Names',
-        'be.Prefs.Timeline.Show.Proxy.Badges',
-        'TL.PREFShowFXBadges',
         'TL.PREFShowThroughEditsState',
         'MZ.SQShowDuplicateMarkers'
+        # The preferences below are commented out for now because they are not written to the preference file until the default behaviour has changed:
+        # 'be.Prefs.Timeline.Show.Video.Thumbnails',
+        # 'be.Prefs.Timeline.Show.Video.Names',
+        # 'be.Prefs.Timeline.Show.Audio.Waveforms',
+        # 'be.Prefs.Timeline.Show.Audio.Names',
+        # 'be.Prefs.Timeline.Show.Proxy.Badges',
+        # 'TL.PREFShowFXBadges',
     )) {
         if (-not (Set-PrefNode $prefs $node "true")) { $missing += $node }
     }
 
     if ($missing.Count -gt 0) {
-        Write-Host "  [warn] Premiere prefs: $($missing.Count) node(s) not found and skipped (file untouched for those nodes):"
+        Write-Host "  [warn] Premiere prefs on version ${version}: $($missing.Count) node(s) not found and skipped (file untouched for those nodes):"
         $missing | ForEach-Object { Write-Host "        - $_" }
         Write-Host "      This is expected on a fresh install (nodes default to the correct value"
         Write-Host "      and are only written by Premiere after a manual change). Otherwise,"
@@ -280,7 +281,13 @@ function winget_installed($id) {
 function winget_apply($id) {
     if (winget_installed $id) {
         Write-Host "  [done]  $id - checking for updates"
+        # Redirecting a native command's stderr under $ErrorActionPreference='Stop'
+        # wraps each line in a NativeCommandError that aborts the script, so soften
+        # the preference while we discard winget's upgrade chatter.
+        $eap = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
         winget upgrade --id $id --exact --silent --accept-package-agreements --accept-source-agreements *> $null
+        $ErrorActionPreference = $eap
     } else {
         winget install --id $id --exact --silent --accept-package-agreements --accept-source-agreements
     }
@@ -475,7 +482,9 @@ function run_fast {
             if ($PREMIERE_RUNNING) {
                 Write-Host "  [warn] Premiere Pro is running - files dropped but not activated"
             } elseif (Test-Path $prefs) {
-                Apply-PremierePrefs $prefs $KYS_FILE $wsName
+                # $profileDir.Parent.Name is the version folder (e.g. "25.0"), so each
+                # profile's warning is tagged with the Premiere version it came from.
+                Apply-PremierePrefs $prefs $KYS_FILE $wsName $profileDir.Parent.Name
             }
         }
     }
@@ -518,9 +527,15 @@ function run_slow {
     foreach ($pkg in $CORE_UV) {
         uv tool install $pkg --upgrade
     }
-    # Add uv's tool bin dir to PATH permanently and refresh for this session (quiet:
-    # it prints "already in PATH" once set up)
+    # Add uv's tool bin dir to PATH permanently and refresh for this session. uv
+    # prints "already in PATH" to stderr when the bin dir is already set up;
+    # redirecting a native command's stderr under $ErrorActionPreference='Stop'
+    # wraps that line in a NativeCommandError and aborts the script, so soften the
+    # preference for this one call.
+    $eap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
     uv tool update-shell *> $null
+    $ErrorActionPreference = $eap
     $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
                 [System.Environment]::GetEnvironmentVariable("Path", "User")
 
