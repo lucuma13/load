@@ -1,9 +1,9 @@
-## 🚗 Auto Set Up Workstation
+## 🚗 Set Up Workstation
 
 Run the line for your OS. It runs on --fast mode first, then
 pauses and continues into --full on a keypress.
 
-* macOS
+* macOS:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/lucuma13/load/main/src/load-mac.sh | bash
 ```
@@ -14,7 +14,7 @@ Invoke-WebRequest -Uri "https://raw.githubusercontent.com/lucuma13/load/main/src
 ```
 
 
-## 🧪 Development / Tests
+### 🧪 Tests (macOS `bats`)
 
 The macOS tests run on [bats](https://github.com/bats-core/bats-core). Its
 libraries (`bats`, `bats-support`, `bats-assert`) are managed as npm
@@ -22,10 +22,6 @@ devDependencies, so they're pinned in `package-lock.json` and tracked by
 Dependabot for new releases. `bats-support` is pulled straight from the
 official `bats-core/bats-support` git repo (the npm registry copy is a fork),
 pinned by tag via `#semver:^0.3.0`.
-
-CI runs the suite on every push/PR via `.github/workflows/tests.yml`
-(`macos-latest`), executing the offline tests (`npm run test:ci`, which skips
-the `live` network-dependent ones).
 
 > **CI note:** npm records the `bats-support` git source as an `ssh://` URL in
 > the lockfile. Local installs work over your normal GitHub SSH keys; the CI
@@ -35,41 +31,31 @@ the `live` network-dependent ones).
 > git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
 > ```
 
-### Prerequisites (fresh macOS)
 
-Install Node (which ships with npm) via Homebrew:
+Install Node:
 ```bash
 brew install node
 ```
-If you don't have Homebrew yet:
+
+Update the libraries:
+
 ```bash
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+npm outdated      # see what's behind
+npm update        # bump within the package.json ranges
 ```
 
-### Install test deps and run
+Install test deps and run:
 
 ```bash
 npm ci            # restore pinned bats libraries into node_modules/
 npm test          # runs: bats tests
 ```
 
-### Updating the libraries
+### 🧪 Tests (Windows `Pester`)
 
-```bash
-npm outdated      # see what's behind
-npm update        # bump within the package.json ranges
-```
-Dependabot also opens a weekly PR when a new bats version is released.
-
-### Windows tests
-
-The Windows tests use [Pester](https://pester.dev). Install it once from the
-PowerShell Gallery, then run:
+The Windows tests use [Pester](https://pester.dev). Install it once from the PowerShell Gallery,
+then run:
 ```powershell
 Install-Module Pester -Scope CurrentUser   # one-time
-Invoke-Pester tests\windows_premiere.Tests.ps1
+Invoke-Pester tests
 ```
-There's no lockfile/Dependabot for Pester (the PowerShell Gallery isn't a
-supported Dependabot ecosystem), so its version is managed manually.
-
-
