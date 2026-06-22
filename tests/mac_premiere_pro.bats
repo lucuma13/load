@@ -129,7 +129,8 @@ timeline_nodes() {
     sed -i.bak 's/TL.PREFLinkedSelectionState/TL.PREFLinkedSelectionStateRENAMED/g' "$PREFS"
     run customise_premiere_pro "$PREFS" "LGG_25.1.kys" "LGG - Single monitor" "$v"
     assert_success
-    assert_output --partial 'needs revising'
+    assert_output --partial 'not found and skipped'
+    assert_output --partial 'Adobe may have renamed these nodes'
     assert_output --partial 'TL.PREFLinkedSelectionState'
     run xmllint --noout "$PREFS"
     assert_success
