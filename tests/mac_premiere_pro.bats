@@ -26,7 +26,7 @@ copy_prefs() { cp "$DIR/fixtures/$1/Adobe Premiere Pro Prefs_truncated" "$PREFS"
 @test "shortcut set is activated" {
   for v in "${PREMIERE_VERSIONS[@]}"; do
     copy_prefs "$v"
-    premiere_apply_prefs "$PREFS" "LGG_25.1.kys" "LGG - Single monitor"
+    customise_premiere_pro "$PREFS" "LGG_25.1.kys" "LGG - Single monitor" "$v"
     run cat "$PREFS"
     assert_output --partial '<FE.Prefs.Shortcuts.Filename>LGG_25.1.kys</FE.Prefs.Shortcuts.Filename>'
   done
@@ -35,7 +35,7 @@ copy_prefs() { cp "$DIR/fixtures/$1/Adobe Premiere Pro Prefs_truncated" "$PREFS"
 @test "workspace is activated, spaces preserved" {
   for v in "${PREMIERE_VERSIONS[@]}"; do
     copy_prefs "$v"
-    premiere_apply_prefs "$PREFS" "LGG_25.1.kys" "LGG - Single monitor"
+    customise_premiere_pro "$PREFS" "LGG_25.1.kys" "LGG - Single monitor" "$v"
     run cat "$PREFS"
     assert_output --partial '<FE.Application.LastWorkspaceName>LGG - Single monitor</FE.Application.LastWorkspaceName>'
   done
@@ -44,7 +44,7 @@ copy_prefs() { cp "$DIR/fixtures/$1/Adobe Premiere Pro Prefs_truncated" "$PREFS"
 @test "labels switch to Classic (names + colours + marker)" {
   for v in "${PREMIERE_VERSIONS[@]}"; do
     copy_prefs "$v"
-    premiere_apply_prefs "$PREFS" "x.kys" "WS"
+    customise_premiere_pro "$PREFS" "x.kys" "WS" "$v"
     run cat "$PREFS"
     assert_output --partial '<BE.Prefs.LabelNames.0>Violet</BE.Prefs.LabelNames.0>'
     assert_output --partial '<BE.Prefs.LabelNames.15>Yellow</BE.Prefs.LabelNames.15>'
@@ -58,7 +58,7 @@ copy_prefs() { cp "$DIR/fixtures/$1/Adobe Premiere Pro Prefs_truncated" "$PREFS"
 @test "auto-save enabled every 5 minutes" {
   for v in "${PREMIERE_VERSIONS[@]}"; do
     copy_prefs "$v"
-    premiere_apply_prefs "$PREFS" "x.kys" "WS"
+    customise_premiere_pro "$PREFS" "x.kys" "WS" "$v"
     run cat "$PREFS"
     assert_output --partial '<BE.Prefs.AutoSave.DoSave>true</BE.Prefs.AutoSave.DoSave>'
     assert_output --partial '<BE.Prefs.AutoSave.Interval>5</BE.Prefs.AutoSave.Interval>'
@@ -85,7 +85,7 @@ timeline_nodes() {
   [ -n "$nodes" ]   # guard: parsing must find at least one node
   for v in "${PREMIERE_VERSIONS[@]}"; do
     copy_prefs "$v"
-    premiere_apply_prefs "$PREFS" "x.kys" "WS"
+    customise_premiere_pro "$PREFS" "x.kys" "WS" "$v"
     run cat "$PREFS"
     while IFS= read -r node; do
       assert_output --partial "<$node>true</$node>"
@@ -96,7 +96,7 @@ timeline_nodes() {
 @test "output prefs is valid XML" {
   for v in "${PREMIERE_VERSIONS[@]}"; do
     copy_prefs "$v"
-    premiere_apply_prefs "$PREFS" "x.kys" "WS"
+    customise_premiere_pro "$PREFS" "x.kys" "WS" "$v"
     run xmllint --noout "$PREFS"
     assert_success
   done
@@ -105,7 +105,7 @@ timeline_nodes() {
 @test "no BOM is introduced" {
   for v in "${PREMIERE_VERSIONS[@]}"; do
     copy_prefs "$v"
-    premiere_apply_prefs "$PREFS" "x.kys" "WS"
+    customise_premiere_pro "$PREFS" "x.kys" "WS" "$v"
     run head -c 3 "$PREFS"
     assert_output '<?x'   # would be the UTF-8 BOM bytes if perl had added one
   done
@@ -114,9 +114,9 @@ timeline_nodes() {
 @test "idempotent: second run is byte-identical" {
   for v in "${PREMIERE_VERSIONS[@]}"; do
     copy_prefs "$v"
-    premiere_apply_prefs "$PREFS" "LGG_25.1.kys" "LGG - Single monitor"
+    customise_premiere_pro "$PREFS" "LGG_25.1.kys" "LGG - Single monitor" "$v"
     cp "$PREFS" "$PREFS.first"
-    premiere_apply_prefs "$PREFS" "LGG_25.1.kys" "LGG - Single monitor"
+    customise_premiere_pro "$PREFS" "LGG_25.1.kys" "LGG - Single monitor" "$v"
     run cmp -s "$PREFS.first" "$PREFS"
     assert_success
   done
@@ -127,7 +127,7 @@ timeline_nodes() {
     copy_prefs "$v"
     # simulate a future Premiere renaming one node
     sed -i.bak 's/TL.PREFLinkedSelectionState/TL.PREFLinkedSelectionStateRENAMED/g' "$PREFS"
-    run premiere_apply_prefs "$PREFS" "LGG_25.1.kys" "LGG - Single monitor"
+    run customise_premiere_pro "$PREFS" "LGG_25.1.kys" "LGG - Single monitor" "$v"
     assert_success
     assert_output --partial 'needs revising'
     assert_output --partial 'TL.PREFLinkedSelectionState'
