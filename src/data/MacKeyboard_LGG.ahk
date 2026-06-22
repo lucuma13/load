@@ -1,23 +1,23 @@
-;-----------------------------------------
-; Mac to Windows Keyboard Mapping
-;=========================================
+;==============================================================================
+; macOS-looking Keyboard Mapping for Windows
+;==============================================================================
 
 ; ! = ALT
 ; ^ = CTRL
 ; + = SHIFT
 ; # = WIN
 
-; -------------------------------------------------------------
+; -----------------------------------------------------------------------------
 ; Header
-; --------------------------------------------------------------
+; -----------------------------------------------------------------------------
 
 #Requires AutoHotkey v2
 #SingleInstance Force
 SetTitleMatchMode 2
 
-; -------------------------------------------------------------
+; -----------------------------------------------------------------------------
 ; Global macOS mappings
-; --------------------------------------------------------------
+; -----------------------------------------------------------------------------
 
 ; Prevent Windows key from launching start panel
 ~LWin::vkE8
@@ -170,14 +170,20 @@ LWin & Tab::AltTab
     ; 4. Execute Terminal
     Run(terminal ' -d "' targetDir '"')
 }
-; --------------------------------------------------------------
+; -----------------------------------------------------------------------------
 ; Global macOS mappings for special chars
-; --------------------------------------------------------------
+; -----------------------------------------------------------------------------
 
-vkDC::Send "``"        ; produces `
-+vkDC::~               ; produces ~
-; vkDE::Send "{Blind}\"             ; test again knowing that ` is the escape character on v2 syntax (\ was on v1 so vkDE::Send "{Blind}\\" didn't work)
-+vkDE::Send "{|}"      ; produces |
+; Bound by scancode (physical key) so they work on both en-US and en-GB layouts.
+;   SC029 = top-left key, left of 1       -> § / ±   (matches the Apple keycap)
+;   SC02B = ISO key between ' and Enter   -> \ / |
+;   SC056 = ISO key right of left Shift   -> ` / ~
+SC029::Send "{U+00A7}"  ; produces §
++SC029::Send "{U+00B1}"  ; produces ±
+SC02B::Send "\"        ; produces \
++SC02B::Send "|"       ; produces |
+SC056::Send "``"       ; produces `
++SC056::Send "~"       ; produces ~
 +'::"
 +2::@
 +3::Send "{#}"
@@ -207,9 +213,9 @@ vkDC::Send "``"        ; produces `
 ;!+9::Send {·}
 ;!+0::Send {‚}
 
-; --------------------------------------------------------------
+; -----------------------------------------------------------------------------
 ; Dead keys for diacritics (ABC Extended style)
-; --------------------------------------------------------------
+; -----------------------------------------------------------------------------
 
 global deadAccent := ""
 
@@ -284,9 +290,9 @@ TryAccent(key) {
         Send "{Backspace}" accentMap[accent][actualKey]
 }
 
-; --------------------------------------------------------------
+; -----------------------------------------------------------------------------
 ; App-specific - Premiere Pro
-; --------------------------------------------------------------
+; -----------------------------------------------------------------------------
 
 #HotIf WinActive("ahk_exe Adobe Premiere Pro.exe")
 
@@ -362,9 +368,9 @@ TryAccent(key) {
 
 #HotIf
 
-; --------------------------------------------------------------
+; -----------------------------------------------------------------------------
 ; App-specific - Google Chrome
-; --------------------------------------------------------------
+; -----------------------------------------------------------------------------
 
 #HotIf WinActive("ahk_class Chrome_WidgetWin_1")
 
@@ -382,9 +388,9 @@ TryAccent(key) {
 
 #HotIf
 
-; --------------------------------------------------------------
+; -----------------------------------------------------------------------------
 ;  App-specific - File Explorer/Finder
-; --------------------------------------------------------------
+; -----------------------------------------------------------------------------
 
 #HotIf WinActive("ahk_class CabinetWClass")
 
@@ -468,7 +474,7 @@ TryAccent(key) {
 Enter:: {
  If ControlGetClassNN(ControlGetFocus()) ; If the focused control name
   ~= 'Edit|Search|Notify'                ;  contains any of the case-sensitive strings listed here
-      Send '`n'
+      Send '{Enter}'
  Else Send '{F2}'
 }
 
@@ -584,4 +590,6 @@ getSelected() {
 }
 
 ; Empty the Recycle Bin without displaying a confirmation prompt
-#!+Backspace::FileRecycleEmpty()
+#!+Backspace:: {
+    try FileRecycleEmpty()   ; no-op (not an error) if the bin is already empty
+}
