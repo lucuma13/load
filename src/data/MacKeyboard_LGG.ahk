@@ -23,8 +23,12 @@ SetTitleMatchMode 2
 ~LWin::vkE8
 ~RWin::vkE8
 
-; Prevent Alt+Shift keys from changing input source language
-LAlt & LShift::vkE8
+
+; Prevent Alt+Shift keys from changing input source language needs to be
+; disabled at the OS level now for the current user with:
+; Set-ItemProperty -Path "HKCU:\Keyboard Layout\Toggle" -Name "Hotkey" -Value "3" -Type String
+; (or load-win.ps1 does it automatically). An approach like
+; "LAlt & LShift::vkE8" swallows Shift and breaks Alt+Shift shortcuts.
 
 ; Prevent Alt Gr from triggering Ctrl+Alt
 ~RAlt:: Send "!"
