@@ -65,28 +65,31 @@ copy_prefs() { cp "$DIR/fixtures/$1/Adobe Premiere Pro Prefs_truncated" "$PREFS"
   done
 }
 
-@test "timeline Link Selection is enabled" {
-  for v in "${PREMIERE_VERSIONS[@]}"; do
-    copy_prefs "$v"
-    premiere_apply_prefs "$PREFS" "x.kys" "WS"
-    run cat "$PREFS"
-    assert_output --partial '<TL.PREFLinkedSelectionState>true</TL.PREFLinkedSelectionState>'
-  done
+# Read the timeline nodes straight from the `for tl_node in ...` loop in the script
+# (comment lines skipped). Commenting a node in/out there automatically adds/removes
+# its check below - no test edit needed.
+timeline_nodes() {
+  awk '
+    /for tl_node in/ { capture=1; next }
+    capture {
+      done = ($0 ~ /; *do/)
+      sub(/;.*$/, "", $0); gsub(/\\/, "", $0); gsub(/^[[:space:]]+|[[:space:]]+$/, "", $0)
+      if ($0 != "" && $0 !~ /^#/) print $0
+      if (done) capture=0
+    }
+  ' "$DIR/../src/load-mac.sh"
 }
 
-@test "timeline display settings all enabled" {
+@test "timeline nodes from the script loop are enabled" {
+  local nodes; nodes="$(timeline_nodes)"
+  [ -n "$nodes" ]   # guard: parsing must find at least one node
   for v in "${PREMIERE_VERSIONS[@]}"; do
     copy_prefs "$v"
     premiere_apply_prefs "$PREFS" "x.kys" "WS"
     run cat "$PREFS"
-    assert_output --partial '<be.Prefs.Timeline.Show.Video.Thumbnails>true</be.Prefs.Timeline.Show.Video.Thumbnails>'
-    assert_output --partial '<be.Prefs.Timeline.Show.Video.Names>true</be.Prefs.Timeline.Show.Video.Names>'
-    assert_output --partial '<be.Prefs.Timeline.Show.Audio.Waveforms>true</be.Prefs.Timeline.Show.Audio.Waveforms>'
-    assert_output --partial '<be.Prefs.Timeline.Show.Audio.Names>true</be.Prefs.Timeline.Show.Audio.Names>'
-    assert_output --partial '<be.Prefs.Timeline.Show.Proxy.Badges>true</be.Prefs.Timeline.Show.Proxy.Badges>'
-    assert_output --partial '<TL.PREFShowFXBadges>true</TL.PREFShowFXBadges>'
-    assert_output --partial '<TL.PREFShowThroughEditsState>true</TL.PREFShowThroughEditsState>'
-    assert_output --partial '<MZ.SQShowDuplicateMarkers>true</MZ.SQShowDuplicateMarkers>'
+    while IFS= read -r node; do
+      assert_output --partial "<$node>true</$node>"
+    done <<< "$nodes"
   done
 }
 
@@ -123,16 +126,16 @@ copy_prefs() { cp "$DIR/fixtures/$1/Adobe Premiere Pro Prefs_truncated" "$PREFS"
   for v in "${PREMIERE_VERSIONS[@]}"; do
     copy_prefs "$v"
     # simulate a future Premiere renaming one node
-    sed -i.bak 's/TL.PREFShowFXBadges/TL.PREFShowFXBadgesRENAMED/g' "$PREFS"
+    sed -i.bak 's/TL.PREFLinkedSelectionState/TL.PREFLinkedSelectionStateRENAMED/g' "$PREFS"
     run premiere_apply_prefs "$PREFS" "LGG_25.1.kys" "LGG - Single monitor"
     assert_success
     assert_output --partial 'needs revising'
-    assert_output --partial 'TL.PREFShowFXBadges'
+    assert_output --partial 'TL.PREFLinkedSelectionState'
     run xmllint --noout "$PREFS"
     assert_success
     run cat "$PREFS"
-    assert_output --partial '<BE.Prefs.AutoSave.Interval>5</BE.Prefs.AutoSave.Interval>'           # others still applied
-    assert_output --partial '<TL.PREFShowFXBadgesRENAMED>false</TL.PREFShowFXBadgesRENAMED>'        # renamed node untouched
+    assert_output --partial '<BE.Prefs.AutoSave.Interval>5</BE.Prefs.AutoSave.Interval>'                       # others still applied
+    assert_output --partial '<TL.PREFLinkedSelectionStateRENAMED>false</TL.PREFLinkedSelectionStateRENAMED>'   # renamed node untouched
   done
 }
 
