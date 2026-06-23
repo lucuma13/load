@@ -4,8 +4,8 @@
   "description": "macOS bats test tooling for the load workstation setup scripts",
   "private": true,
   "scripts": {
-    "test": "bats tests",
-    "test:ci": "bats --filter-tags '!live' tests"
+    "test": "bats tests/",
+    "test:ci": "bats --filter-tags '!live' tests/"
   },
   "devDependencies": {
     "bats": "^1.13.0",
