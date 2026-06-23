@@ -1,0 +1,100 @@
+---
+# Local fast-feedback hooks. These mirror the CI checks (which remain the
+# enforcing authority). One-time setup:  pre-commit install
+# Run across the whole repo:  pre-commit run --all-files
+#
+# The PowerShell hooks are local and need pwsh + the PSScriptAnalyzer module
+# installed (both are assumed present; the hooks do not bootstrap them).
+
+# Payload data and byte-exact test fixtures must never be reformatted.
+exclude: |
+  (?x)^(
+    src/data/.*|
+    tests/fixtures/.*|
+    .*\.DS_Store
+  )$
+
+repos:
+  # Pre-commit config sanity
+  - repo: meta
+    hooks:
+      - id: check-hooks-apply
+      - id: check-useless-excludes
+
+  # General file hygiene (enforces .editorconfig: LF, final newline, no trailing WS)
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-added-large-files
+      - id: check-case-conflict
+      - id: check-merge-conflict
+      - id: check-executables-have-shebangs
+      - id: check-shebang-scripts-are-executable
+      - id: end-of-file-fixer
+      - id: mixed-line-ending
+        args: [--fix=lf]
+      - id: trailing-whitespace
+        exclude: \.md$
+
+  # Spellcheck (flag-only; never auto-edits)
+  - repo: https://github.com/crate-ci/typos
+    rev: v1.47.2
+    hooks:
+      - id: typos
+        args: [--force-exclude]
+
+  # Bash formatter (shfmt; honours .editorconfig 2-space indent)
+  - repo: https://github.com/scop/pre-commit-shfmt
+    rev: v3.13.1-1
+    hooks:
+      - id: shfmt
+
+  # Bash linter (honours .shellcheckrc; matches `make lint`). shellcheck-py ships
+  # the binary as a wheel - no Docker, unlike koalaman/shellcheck-precommit.
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.11.0.1
+    hooks:
+      - id: shellcheck
+        # .bats test files use bats syntax + source load-mac.sh dynamically;
+        # they're checked by the bats runner, not shellcheck (matches `make lint`).
+        exclude: \.bats$
+
+  # YAML linter (config mirrors the CI audit job)
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.38.0
+    hooks:
+      - id: yamllint
+        args:
+          - --config-data
+          - "{extends: default, rules: {line-length: {max: 120, level: warning}, comments: {min-spaces-from-content: 1}, document-start: disable}}"
+
+  # GitHub workflow schema validation (mirrors CI audit job)
+  - repo: https://github.com/python-jsonschema/check-jsonschema
+    rev: 0.37.3
+    hooks:
+      - id: check-github-workflows
+        args: [--verbose]
+
+  # CI security audit (mirrors CI audit job)
+  - repo: https://github.com/zizmorcore/zizmor-pre-commit
+    rev: v1.26.1
+    hooks:
+      - id: zizmor
+
+  # PowerShell formatter + linter (local; need pwsh + PSScriptAnalyzer)
+  - repo: local
+    hooks:
+      # Formats src + tests *.ps1 in place with Invoke-Formatter, normalising to LF.
+      - id: powershell-format
+        name: PowerShell format (Invoke-Formatter)
+        language: system
+        entry: "pwsh -NoProfile -Command 'Get-ChildItem -Recurse -Path src,tests -Filter *.ps1 | ForEach-Object { $p = $_.FullName; $t = Get-Content -Raw -LiteralPath $p; $o = ((Invoke-Formatter -ScriptDefinition $t) -replace ([string][char]13 + [string][char]10), ([string][char]10)); if ($o -ne $t) { Set-Content -NoNewline -LiteralPath $p -Value $o -Encoding utf8NoBOM } }'"
+        files: \.ps1$
+        pass_filenames: false
+      # Runs PSScriptAnalyzer over src + tests at all severities (mirrors CI).
+      - id: powershell-analyzer
+        name: PowerShell lint (PSScriptAnalyzer)
+        language: system
+        entry: "pwsh -NoProfile -Command '$f = Invoke-ScriptAnalyzer -Path src -Recurse -Settings ./PSScriptAnalyzerSettings.psd1 -Severity Information,Warning,Error; $f += Invoke-ScriptAnalyzer -Path tests -Recurse -Settings ./PSScriptAnalyzerSettings.psd1 -Severity Information,Warning,Error -ExcludeRule PSUseDeclaredVarsMoreThanAssignments; if ($f) { $f | Format-Table RuleName,Severity,ScriptName,Line,Message -AutoSize -Wrap; exit 1 }'"
+        files: \.ps1$
+        pass_filenames: false
