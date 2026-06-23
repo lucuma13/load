@@ -1,4 +1,4 @@
-# PSScriptAnalyzer config for load-win.ps1
+# PSScriptAnalyzer config for load-win.ps1 and its Pester tests.
 # Runs the full default rule set MINUS the rules below, which are false positives
 # for a standalone interactive installer script.
 @{
@@ -16,5 +16,9 @@
         # The two empty catches are intentional best-effort registry operations
         # (unlock-or-ignore); failure is an acceptable no-op.
         'PSAvoidUsingEmptyCatchBlock'
+
+        # Pester tests assign variables consumed by the test framework (e.g. in
+        # BeforeAll/It blocks), which the analyzer flags as assigned-but-unused.
+        'PSUseDeclaredVarsMoreThanAssignments'
     )
 }
