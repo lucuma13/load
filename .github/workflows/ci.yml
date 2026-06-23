@@ -59,16 +59,36 @@ jobs:
   # Test & Lint (Windows side)
   windows-pester:
     runs-on: windows-latest
+    permissions:
+      contents: read
+      security-events: write # upload SARIF to code scanning
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
-      - name: Lint (PSScriptAnalyzer)
-        shell: pwsh
-        run: |
-          $r  = Invoke-ScriptAnalyzer -Path src   -Recurse -Settings ./PSScriptAnalyzerSettings.psd1 -Severity Information,Warning,Error
-          $r += Invoke-ScriptAnalyzer -Path tests -Recurse -Settings ./PSScriptAnalyzerSettings.psd1 -Severity Information,Warning,Error -ExcludeRule PSUseDeclaredVarsMoreThanAssignments
-          if ($r) { $r | Format-Table RuleName,Severity,ScriptName,Line,Message -AutoSize -Wrap; throw "PSScriptAnalyzer found $($r.Count) issue(s)" }
+      - name: Lint src (PSScriptAnalyzer)
+        uses: microsoft/psscriptanalyzer-action@6b2948b1944407914a58661c49941824d149734f # v1.1
+        with:
+          path: src
+          recurse: true
+          settings: ./PSScriptAnalyzerSettings.psd1
+          enableExit: true
+          output: psa-src.sarif
+      - name: Lint tests (PSScriptAnalyzer)
+        if: always()
+        uses: microsoft/psscriptanalyzer-action@6b2948b1944407914a58661c49941824d149734f # v1.1
+        with:
+          path: tests
+          recurse: true
+          settings: ./PSScriptAnalyzerSettings.psd1
+          excludeRule: "'PSUseDeclaredVarsMoreThanAssignments'"
+          enableExit: true
+          output: psa-tests.sarif
+      - name: Upload PSScriptAnalyzer SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@c35d1b164463ee62a100735382aaaa525c5d3496 # codeql-bundle-v2.25.6
+        with:
+          sarif_file: .
       - name: Run Pester
         shell: pwsh
         run: Invoke-Pester -Path tests -Output Detailed -CI
