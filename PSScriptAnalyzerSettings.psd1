@@ -13,10 +13,6 @@
         # doesn't apply to an internal script.
         'PSUseShouldProcessForStateChangingFunctions'
 
-        # Prefs/Apps/Macros are deliberately plural (Set-PremiereProPrefs sets many
-        # prefs, Install-AhkMacros installs many macros). Singularising would mislead.
-        'PSUseSingularNouns'
-
         # The two empty catches are intentional best-effort registry operations
         # (unlock-or-ignore); failure is an acceptable no-op.
         'PSAvoidUsingEmptyCatchBlock'

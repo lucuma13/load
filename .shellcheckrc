@@ -1,0 +1,4 @@
+# SC2086 (word splitting): intentional. The brew package lists ($CORE_FORMULAE,
+# $CORE_CASKS, $FULL_CASKS, ...) are space-separated and must split into separate
+# args for `brew install`/`upgrade`. Quoting them would pass one bogus argument.
+disable=SC2086
