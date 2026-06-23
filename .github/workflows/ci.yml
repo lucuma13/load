@@ -78,11 +78,18 @@ jobs:
           settings: ./PSScriptAnalyzerSettings.psd1
           enableExit: true
           output: psa-tests.sarif
-      - name: Upload PSScriptAnalyzer SARIF
+      - name: Upload src SARIF
         if: always()
         uses: github/codeql-action/upload-sarif@c35d1b164463ee62a100735382aaaa525c5d3496 # codeql-bundle-v2.25.6
         with:
-          sarif_file: .
+          sarif_file: psa-src.sarif
+          category: psa-src
+      - name: Upload tests SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@c35d1b164463ee62a100735382aaaa525c5d3496 # codeql-bundle-v2.25.6
+        with:
+          sarif_file: psa-tests.sarif
+          category: psa-tests
       - name: Run Pester
         shell: pwsh
         run: Invoke-Pester -Path tests -Output Detailed -CI
