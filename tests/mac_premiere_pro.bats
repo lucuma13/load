@@ -18,6 +18,12 @@ setup() {
   for d in "$DIR"/fixtures/premiere_pro_*/; do
     [ -d "$d" ] && PREMIERE_VERSIONS+=("$(basename "$d")")
   done
+  MEDIA_CACHE_DOMAIN="test.load.mediacache"
+  defaults delete "$MEDIA_CACHE_DOMAIN" 2>/dev/null || true
+}
+
+teardown() {
+  defaults delete "$MEDIA_CACHE_DOMAIN" 2>/dev/null || true
 }
 
 # Copy the given version's prefs fixture into the per-test temp file.
@@ -164,13 +170,12 @@ timeline_nodes() {
 }
 
 @test "premiere_set_media_cache sets FolderPath, preserves DatabasePath" {
-  D="test.load.$$.mediacache"
-  defaults write "$D" "Media Cache" -dict DatabasePath "/orig/db/" FolderPath "/orig/folder/"
-  premiere_set_media_cache "$D" "/Volumes/SCRATCH_X/Cache" # no trailing slash on input
-  run defaults read "$D" "Media Cache"
+  defaults write "$MEDIA_CACHE_DOMAIN" "Media Cache" -dict DatabasePath "/orig/db/" FolderPath "/orig/folder/"
+  premiere_set_media_cache "$MEDIA_CACHE_DOMAIN" "/Volumes/SCRATCH_X/Cache" # no trailing slash on input
+  run defaults read "$MEDIA_CACHE_DOMAIN" "Media Cache"
   assert_output --partial 'FolderPath = "/Volumes/SCRATCH_X/Cache/"'
   assert_output --partial 'DatabasePath = "/orig/db/"'
-  defaults delete "$D"
+  # cleanup handled by teardown
 }
 
 # These hit the network to confirm the hard-coded plugin installer URLs are still
