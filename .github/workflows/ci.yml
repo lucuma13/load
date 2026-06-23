@@ -52,7 +52,7 @@ jobs:
       - name: Syntax check
         run: make check
       - name: Lint (ShellCheck)
-        run: make lint
+        uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # v2.0.0
       - run: npm run test:ci
   # Test & Lint (Windows side)
   windows-pester:
