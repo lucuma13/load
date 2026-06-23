@@ -76,7 +76,6 @@ jobs:
           path: tests
           recurse: true
           settings: ./PSScriptAnalyzerSettings.psd1
-          excludeRule: "PSUseDeclaredVarsMoreThanAssignments"
           enableExit: true
           output: psa-tests.sarif
       - name: Upload PSScriptAnalyzer SARIF
