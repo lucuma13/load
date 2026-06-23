@@ -5,7 +5,6 @@
 # Usage:
 # curl -fsSL https://raw.githubusercontent.com/lucuma13/load/main/src/load-mac.sh | bash
 
-
 SELF_URL="https://raw.githubusercontent.com/lucuma13/load/main/src/load-mac.sh"
 
 # =============================================================================
@@ -26,9 +25,9 @@ brew_prefix() {
   fi
 }
 
-would_run()   { echo "  🚀  $1"; }
-would_skip()  { echo "  ⏭️  $1"; }
-already_done(){ echo "  ✅  $1"; }
+would_run() { echo "  🚀  $1"; }
+would_skip() { echo "  ⏭️  $1"; }
+already_done() { echo "  ✅  $1"; }
 
 # quiet_run <cmd…> — run a command fully silent on success: buffer its combined
 # output and echo it only if the command fails, then propagate the failure (so
@@ -42,8 +41,8 @@ quiet_run() {
 }
 
 formula_installed() { $BREW_OK && brew list --formula "$1" &>/dev/null 2>&1; }
-cask_installed()    { $BREW_OK && brew list --cask    "$1" &>/dev/null 2>&1; }
-uv_installed()      { command -v uv &>/dev/null && uv tool list 2>/dev/null | grep -q "^$1"; }
+cask_installed() { $BREW_OK && brew list --cask "$1" &>/dev/null 2>&1; }
+uv_installed() { command -v uv &>/dev/null && uv tool list 2>/dev/null | grep -q "^$1"; }
 
 # resolve_mode <args…> — echo the setup flags present, normalised and deduped
 # (a space-separated subset of "fast full dryrun"); empty when none were given.
@@ -51,9 +50,9 @@ resolve_mode() {
   local arg out=""
   for arg in "$@"; do
     case "$arg" in
-      --fast)    case " $out " in *" fast "*)   ;; *) out="$out fast"   ;; esac ;;
-      --full)    case " $out " in *" full "*)   ;; *) out="$out full"   ;; esac ;;
-      --dry-run) case " $out " in *" dryrun "*) ;; *) out="$out dryrun" ;; esac ;;
+    --fast) case " $out " in *" fast "*) ;; *) out="$out fast" ;; esac ;;
+    --full) case " $out " in *" full "*) ;; *) out="$out full" ;; esac ;;
+    --dry-run) case " $out " in *" dryrun "*) ;; *) out="$out dryrun" ;; esac ;;
     esac
   done
   echo "${out# }"
@@ -112,14 +111,14 @@ customise_premiere_pro() {
 
   # Classic label preset (names + colours + preset marker)
   for i in "${!label_names[@]}"; do
-    set_pref_node "$prefs" "BE.Prefs.LabelNames.$i"  "${label_names[$i]}"  || missing+=("BE.Prefs.LabelNames.$i")
+    set_pref_node "$prefs" "BE.Prefs.LabelNames.$i" "${label_names[$i]}" || missing+=("BE.Prefs.LabelNames.$i")
     set_pref_node "$prefs" "BE.Prefs.LabelColors.$i" "${label_colors[$i]}" || missing+=("BE.Prefs.LabelColors.$i")
   done
   set_pref_node "$prefs" "PPro.LabelColorPresets.RecentPreset" '{"builtIn":true,"name":"Classic"}' || missing+=("PPro.LabelColorPresets.RecentPreset")
 
   # Auto-save: on, every 5 minutes
-  set_pref_node "$prefs" "BE.Prefs.AutoSave.DoSave"   "true" || missing+=("BE.Prefs.AutoSave.DoSave")
-  set_pref_node "$prefs" "BE.Prefs.AutoSave.Interval" "5"    || missing+=("BE.Prefs.AutoSave.Interval")
+  set_pref_node "$prefs" "BE.Prefs.AutoSave.DoSave" "true" || missing+=("BE.Prefs.AutoSave.DoSave")
+  set_pref_node "$prefs" "BE.Prefs.AutoSave.Interval" "5" || missing+=("BE.Prefs.AutoSave.Interval")
 
   # Timeline toggles: Link Selection + Display Settings (wrench menu).
   # The Display Settings nodes below are commented out for now because they are not
@@ -164,24 +163,24 @@ premiere_set_media_cache() {
 CORE_FORMULAE="media-info exiftool ffmpeg uv"
 CORE_CASKS="vlc caffeine mediainfo"
 CORE_UV="triplecheck mhl-suite"
-FULL_FORMULAE="git"  # add these if needed: atomicparsley, bento4, wget
+FULL_FORMULAE="git" # add these if needed: atomicparsley, bento4, wget
 FULL_CASKS="google-chrome adobe-acrobat-reader audacity mediahuman-audio-converter appcleaner"
 
 # Friendly display names for the brew/uv ids (used by the checklist). Anything
 # without a mapping passes through unchanged (uv tool names are already readable).
 pkg_alias() {
   case "$1" in
-    media-info)                 echo "MediaInfo CLI" ;;
-    mediainfo)                  echo "MediaInfo GUI" ;;
-    exiftool)                   echo "ExifTool" ;;
-    ffmpeg)                     echo "FFmpeg" ;;
-    vlc)                        echo "VLC" ;;
-    caffeine)                   echo "Caffeine" ;;
-    google-chrome)              echo "Google Chrome" ;;
-    adobe-acrobat-reader)       echo "Adobe Acrobat Reader" ;;
-    audacity)                   echo "Audacity" ;;
-    appcleaner)                 echo "AppCleaner" ;;
-    *)                          echo "$1" ;;
+  media-info) echo "MediaInfo CLI" ;;
+  mediainfo) echo "MediaInfo GUI" ;;
+  exiftool) echo "ExifTool" ;;
+  ffmpeg) echo "FFmpeg" ;;
+  vlc) echo "VLC" ;;
+  caffeine) echo "Caffeine" ;;
+  google-chrome) echo "Google Chrome" ;;
+  adobe-acrobat-reader) echo "Adobe Acrobat Reader" ;;
+  audacity) echo "Audacity" ;;
+  appcleaner) echo "AppCleaner" ;;
+  *) echo "$1" ;;
   esac
 }
 
@@ -196,9 +195,11 @@ set -euo pipefail
 
 MODES="$(resolve_mode "$@")"
 
-FAST=false; FULL=false; DRY_RUN=false
-case " $MODES " in *" fast "*)   FAST=true    ;; esac
-case " $MODES " in *" full "*)   FULL=true    ;; esac
+FAST=false
+FULL=false
+DRY_RUN=false
+case " $MODES " in *" fast "*) FAST=true ;; esac
+case " $MODES " in *" full "*) FULL=true ;; esac
 case " $MODES " in *" dryrun "*) DRY_RUN=true ;; esac
 
 # No flag given — run the Fast pass inline now (quick config), then pause and
@@ -208,7 +209,10 @@ case " $MODES " in *" dryrun "*) DRY_RUN=true ;; esac
 # Bail if there is none (e.g. CI) so we don't run a heavy install unattended.
 AUTO=false
 if [ -z "$MODES" ]; then
-  { exec 3<>/dev/tty; } 2>/dev/null || { usage; exit 1; }
+  { exec 3<>/dev/tty; } 2>/dev/null || {
+    usage
+    exit 1
+  }
   exec 3>&-
   AUTO=true
   FAST=true
@@ -218,8 +222,10 @@ fi
 # downloads/installs. The bare command runs Fast inline then hands off to a Full
 # pass (marked with LOAD_FROM_FAST) that runs Slow only — so Fast is skipped there
 # to avoid repeating the same actions.
-RUN_FAST=true;  [ -n "${LOAD_FROM_FAST:-}" ] && RUN_FAST=false
-RUN_SLOW=true;  $FAST && RUN_SLOW=false
+RUN_FAST=true
+[ -n "${LOAD_FROM_FAST:-}" ] && RUN_FAST=false
+RUN_SLOW=true
+$FAST && RUN_SLOW=false
 
 # Re-exec from a real file when piped (curl | bash) for non-fast runs. Reading
 # the script from stdin lets child processes (e.g. brew's ca-certificates
@@ -241,14 +247,20 @@ fi
 # Preflight
 # -----------------------------------------------------------------------------
 
-PREMIERE_OK=false; [ -d "$HOME/Documents/Adobe/Premiere Pro" ] && PREMIERE_OK=true
+PREMIERE_OK=false
+[ -d "$HOME/Documents/Adobe/Premiere Pro" ] && PREMIERE_OK=true
 # Premiere rewrites its prefs on exit — activating a set while it's running would get clobbered.
 # Match the process name (version-agnostic) rather than full args, which would hit our own perl call.
-PREMIERE_RUNNING=false; $PREMIERE_OK && pgrep "Adobe Premiere Pro" &>/dev/null 2>&1 && PREMIERE_RUNNING=true
-BREW_OK=false; command -v brew &>/dev/null && BREW_OK=true
+PREMIERE_RUNNING=false
+$PREMIERE_OK && pgrep "Adobe Premiere Pro" &>/dev/null 2>&1 && PREMIERE_RUNNING=true
+BREW_OK=false
+command -v brew &>/dev/null && BREW_OK=true
 PVF_OK=false
 pkgutil --pkg-info com.apple.pkg.ProVideoFormats &>/dev/null 2>&1 && PVF_OK=true
-SCRATCH="$(ls -d /Volumes/SCRATCH* 2>/dev/null | head -1 || true)"
+# First mounted SCRATCH* volume, or "" if none.
+scratch_vols=(/Volumes/SCRATCH*)
+SCRATCH=""
+[ -d "${scratch_vols[0]}" ] && SCRATCH="${scratch_vols[0]}"
 
 # Work dir — every download (the LUT pack and the plugin installers) goes here, so
 # all our temp files live under one folder instead of scattering across ~/Downloads
@@ -289,8 +301,8 @@ luts_present() { ls "$WORKDIR/LUTs/"* >/dev/null 2>&1; }
 # prefs_applied — true once the lightweight System/Finder/TextEdit config is in
 # place (probe a representative key, mirroring the Windows keyboard check).
 prefs_applied() {
-  [ "$(defaults read NSGlobalDomain KeyRepeat 2>/dev/null)" = "2" ] \
-    && [ "$(defaults read com.apple.dock autohide 2>/dev/null)" = "1" ]
+  [ "$(defaults read NSGlobalDomain KeyRepeat 2>/dev/null)" = "2" ] &&
+    [ "$(defaults read com.apple.dock autohide 2>/dev/null)" = "1" ]
 }
 
 # Premiere plugins already on the machine (detected by install path). Mister Horse's
@@ -318,21 +330,30 @@ checklist() {
   [ -n "$SCRATCH" ] && items="$items, media cache"
   items="$items, LUTs"
   local premiere_line="Premiere Pro ($items)"
-  if ! $PREMIERE_OK;      then would_skip "$premiere_line — not installed"
-  elif $PREMIERE_RUNNING; then would_skip "$premiere_line — Premiere Pro is open"
-  elif premiere_applied && luts_present; then already_done "$premiere_line"
-  else would_run "$premiere_line"
+  if ! $PREMIERE_OK; then
+    would_skip "$premiere_line — not installed"
+  elif $PREMIERE_RUNNING; then
+    would_skip "$premiere_line — Premiere Pro is open"
+  elif premiere_applied && luts_present; then
+    already_done "$premiere_line"
+  else
+    would_run "$premiere_line"
   fi
 
   # System, Finder & TextEdit preferences — the lightweight config.
-  if prefs_applied; then already_done "System, Finder & TextEdit preferences"
-  else                   would_run    "System, Finder & TextEdit preferences"
+  if prefs_applied; then
+    already_done "System, Finder & TextEdit preferences"
+  else
+    would_run "System, Finder & TextEdit preferences"
   fi
 
   # Pro Video Formats
-  if   $PVF_OK; then already_done "Pro Video Formats"
-  elif $FAST;   then would_skip   "Pro Video Formats (--fast)"
-  else               would_run    "Pro Video Formats"
+  if $PVF_OK; then
+    already_done "Pro Video Formats"
+  elif $FAST; then
+    would_skip "Pro Video Formats (--fast)"
+  else
+    would_run "Pro Video Formats"
   fi
 
   # Install or update — Homebrew, managed packages, Premiere plugins and uv tools,
@@ -344,18 +365,21 @@ checklist() {
 
   local apps_all="" apps_done="" apps_todo="" pkg name
 
-  name="Homebrew"; apps_all="$apps_all, $name"
+  name="Homebrew"
+  apps_all="$apps_all, $name"
   if ! $FAST; then
     if $BREW_OK; then apps_done="$apps_done, $name"; else apps_todo="$apps_todo, $name"; fi
   fi
   for pkg in $formulae_list; do
-    name="$(pkg_alias "$pkg")"; apps_all="$apps_all, $name"
+    name="$(pkg_alias "$pkg")"
+    apps_all="$apps_all, $name"
     if ! $FAST; then
       if formula_installed "$pkg"; then apps_done="$apps_done, $name"; else apps_todo="$apps_todo, $name"; fi
     fi
   done
   for pkg in $casks_list; do
-    name="$(pkg_alias "$pkg")"; apps_all="$apps_all, $name"
+    name="$(pkg_alias "$pkg")"
+    apps_all="$apps_all, $name"
     if ! $FAST; then
       # MediaInfo GUI counts as done when a MediaInfo.app is already present, even if
       # Homebrew isn't managing it (e.g. an App Store install we deliberately leave alone).
@@ -377,19 +401,22 @@ checklist() {
     fi
   fi
   for pkg in $CORE_UV; do
-    name="$(pkg_alias "$pkg")"; apps_all="$apps_all, $name"
+    name="$(pkg_alias "$pkg")"
+    apps_all="$apps_all, $name"
     if ! $FAST; then
       if uv_installed "$pkg"; then apps_done="$apps_done, $name"; else apps_todo="$apps_todo, $name"; fi
     fi
   done
 
-  apps_all="${apps_all#, }"; apps_done="${apps_done#, }"; apps_todo="${apps_todo#, }"
+  apps_all="${apps_all#, }"
+  apps_done="${apps_done#, }"
+  apps_todo="${apps_todo#, }"
 
   if $FAST; then
     would_skip "Install or update (--fast) — $apps_all"
   else
     [ -n "$apps_done" ] && already_done "Install or update: $apps_done"
-    [ -n "$apps_todo" ] && would_run    "Install or update: $apps_todo"
+    [ -n "$apps_todo" ] && would_run "Install or update: $apps_todo"
   fi
 
   echo ""
@@ -415,7 +442,7 @@ run_fast() {
   defaults write com.apple.dock orientation -string "bottom"
   defaults write com.apple.dock show-recents -bool false
   defaults write com.apple.dock tilesize -int 50
-  if pmset -g batt | grep -q "InternalBattery"; then  # Laptops only
+  if pmset -g batt | grep -q "InternalBattery"; then # Laptops only
     defaults write com.apple.controlcenter BatteryShowPercentage -bool true
   fi
   killall Dock
@@ -533,7 +560,11 @@ plistlib.dump(p,open(path,'wb'))
 
   # Cache sudo credentials (only the steps below need root) and keep them alive
   sudo -v
-  while true; do sudo -n true; sleep 60; kill -0 "$$" || exit; done 2>/dev/null &
+  while true; do
+    sudo -n true
+    sleep 60
+    kill -0 "$$" || exit
+  done 2>/dev/null &
 
   # Homebrew — install it, or refresh it (update + cleanup) when already present.
   if ! $BREW_OK; then
@@ -541,8 +572,8 @@ plistlib.dump(p,open(path,'wb'))
 
     PREFIX="$(brew_prefix)"
     SHELLENV_LINE="eval \"\$(${PREFIX}/bin/brew shellenv)\""
-    echo >> "$HOME/.zprofile"
-    echo "$SHELLENV_LINE" >> "$HOME/.zprofile"
+    echo >>"$HOME/.zprofile"
+    echo "$SHELLENV_LINE" >>"$HOME/.zprofile"
     eval "$("${PREFIX}/bin/brew" shellenv)"
   fi
 
@@ -559,7 +590,7 @@ plistlib.dump(p,open(path,'wb'))
   # Core managed packages. Skip the MediaInfo GUI cask only when a MediaInfo.app is
   # present but NOT brew-managed (e.g. the better-integrated App Store build) — don't
   # override or adopt it.
-  quiet_run brew install --adopt        $CORE_FORMULAE
+  quiet_run brew install --adopt $CORE_FORMULAE
   local core_casks=""
   for cask in $CORE_CASKS; do
     [ "$cask" = mediainfo ] && mediainfo_gui_external && continue
@@ -567,7 +598,7 @@ plistlib.dump(p,open(path,'wb'))
   done
   # install --adopt brings in anything missing; upgrade --greedy then updates the
   # already-installed casks.
-  quiet_run brew install --cask --adopt  $core_casks
+  quiet_run brew install --cask --adopt $core_casks
   quiet_run brew upgrade --cask --greedy $core_casks
   # --quiet drops uv's resolve/install progress on success but still prints errors.
   for pkg in $CORE_UV; do uv tool install "$pkg" --upgrade --quiet; done
@@ -641,8 +672,8 @@ PY
 
   # Full-only managed packages
   if $FULL; then
-    quiet_run brew install --adopt         $FULL_FORMULAE
-    quiet_run brew install --cask --adopt  $FULL_CASKS
+    quiet_run brew install --adopt $FULL_FORMULAE
+    quiet_run brew install --cask --adopt $FULL_CASKS
     quiet_run brew upgrade --cask --greedy $FULL_CASKS
   fi
 
@@ -695,7 +726,10 @@ PY
 # -----------------------------------------------------------------------------
 
 # --dry-run just prints the checklist, then stops.
-if $DRY_RUN; then checklist; exit 0; fi
+if $DRY_RUN; then
+  checklist
+  exit 0
+fi
 
 if $RUN_FAST; then run_fast; fi
 
