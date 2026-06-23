@@ -12,6 +12,8 @@ Invoke-WebRequest -Uri "https://raw.githubusercontent.com/lucuma13/load/main/src
 
 $ErrorActionPreference = "Continue"
 
+Set-StrictMode -Version Latest
+
 $WorkDir = "$HOME\Downloads\load-win"
 New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
 
@@ -24,11 +26,11 @@ function Find-AhkExe {
     $exe = Get-Command AutoHotkey.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
     if (-not $exe) {
         $exe = Get-ChildItem `
-                   "$env:ProgramFiles\AutoHotkey", `
-                   "${env:ProgramFiles(x86)}\AutoHotkey" `
-                   -Recurse -Filter "AutoHotkey*.exe" -ErrorAction SilentlyContinue |
-               Sort-Object { $_.Name -notmatch '64' } |
-               Select-Object -First 1 -ExpandProperty FullName
+            "$env:ProgramFiles\AutoHotkey", `
+            "${env:ProgramFiles(x86)}\AutoHotkey" `
+            -Recurse -Filter "AutoHotkey*.exe" -ErrorAction SilentlyContinue |
+            Sort-Object { $_.Name -notmatch '64' } |
+            Select-Object -First 1 -ExpandProperty FullName
     }
     return $exe
 }
@@ -48,13 +50,13 @@ function Get-WorkspaceName {
 function Set-PrefNode {
     param($prefs, $node, $value)
     $bytes = [System.IO.File]::ReadAllBytes($prefs)
-    if     ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE) { $enc = [System.Text.Encoding]::Unicode }
+    if ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE) { $enc = [System.Text.Encoding]::Unicode }
     elseif ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFE -and $bytes[1] -eq 0xFF) { $enc = [System.Text.Encoding]::BigEndianUnicode }
-    else                                                                            { $enc = [System.Text.Encoding]::UTF8 }
-    $content  = $enc.GetString($bytes)
-    $open     = "<$node>"
-    $close    = "</$node>"
-    $idx      = $content.IndexOf($open)
+    else { $enc = [System.Text.Encoding]::UTF8 }
+    $content = $enc.GetString($bytes)
+    $open = "<$node>"
+    $close = "</$node>"
+    $idx = $content.IndexOf($open)
     if ($idx -lt 0) { return $false }
     $closeIdx = $content.IndexOf($close, $idx + $open.Length)
     $new = $content.Substring(0, $idx + $open.Length) + $value + $content.Substring($closeIdx)
@@ -62,7 +64,7 @@ function Set-PrefNode {
     return $true
 }
 
-# Set-PremiereProPrefs <prefs> <kys_file> <ws_name> - point Premiere Pro's keyboard shortcuts preset
+# Set-PremierePro <prefs> <kys_file> <ws_name> - point Premiere Pro's keyboard shortcuts preset
 # and active workspace at our files, use  Classic label colour preset, enable auto-save every 5 minutes,
 # and toggle on the Timeline's Linked Selection button and some Timeline Display Settings.
 #
@@ -73,45 +75,45 @@ function Set-PrefNode {
 #   (b) Adobe renamed the node in this Premiere version - the setting was NOT
 #       applied and the script needs updating.
 # Either way the file is left untouched for that node.
-function Set-PremiereProPrefs {
+function Set-PremierePro {
     param($prefs, $kysFile, $wsName, $version)
-    $labelNames  = @('Violet','Iris','Caribbean','Lavender','Cerulean','Forest','Rose','Mango','Purple','Blue','Teal','Magenta','Tan','Green','Brown','Yellow')
-    $labelColors = @('14717094','13408882','10016297','14910691','14597935','5814353','10776567','3909357','9896087','16727100','8421376','15151847','9814478','2191389','1262987','6611682')
+    $labelNames = @('Violet', 'Iris', 'Caribbean', 'Lavender', 'Cerulean', 'Forest', 'Rose', 'Mango', 'Purple', 'Blue', 'Teal', 'Magenta', 'Tan', 'Green', 'Brown', 'Yellow')
+    $labelColors = @('14717094', '13408882', '10016297', '14910691', '14597935', '5814353', '10776567', '3909357', '9896087', '16727100', '8421376', '15151847', '9814478', '2191389', '1262987', '6611682')
     $missing = @()
 
     # Keyboard shortcuts preset
-    if (-not (Set-PrefNode $prefs "FE.Prefs.Shortcuts.Filename" $kysFile)) { $missing += "FE.Prefs.Shortcuts.Filename" }
+    if (-not (Set-PrefNode -Prefs $prefs -Node "FE.Prefs.Shortcuts.Filename" -Value $kysFile)) { $missing += "FE.Prefs.Shortcuts.Filename" }
 
     # Active workspace
     if ($wsName) {
-        if (-not (Set-PrefNode $prefs "FE.Application.LastWorkspaceName" $wsName)) { $missing += "FE.Application.LastWorkspaceName" }
+        if (-not (Set-PrefNode -Prefs $prefs -Node "FE.Application.LastWorkspaceName" -Value $wsName)) { $missing += "FE.Application.LastWorkspaceName" }
     }
 
     # Classic label colour preset
     for ($i = 0; $i -lt $labelNames.Count; $i++) {
-        if (-not (Set-PrefNode $prefs "BE.Prefs.LabelNames.$i"  $labelNames[$i]))  { $missing += "BE.Prefs.LabelNames.$i" }
-        if (-not (Set-PrefNode $prefs "BE.Prefs.LabelColors.$i" $labelColors[$i])) { $missing += "BE.Prefs.LabelColors.$i" }
+        if (-not (Set-PrefNode -Prefs $prefs -Node "BE.Prefs.LabelNames.$i"  -Value $labelNames[$i])) { $missing += "BE.Prefs.LabelNames.$i" }
+        if (-not (Set-PrefNode -Prefs $prefs -Node "BE.Prefs.LabelColors.$i" -Value $labelColors[$i])) { $missing += "BE.Prefs.LabelColors.$i" }
     }
-    if (-not (Set-PrefNode $prefs "PPro.LabelColorPresets.RecentPreset" '{"builtIn":true,"name":"Classic"}')) { $missing += "PPro.LabelColorPresets.RecentPreset" }
+    if (-not (Set-PrefNode -Prefs $prefs -Node "PPro.LabelColorPresets.RecentPreset" -Value '{"builtIn":true,"name":"Classic"}')) { $missing += "PPro.LabelColorPresets.RecentPreset" }
 
     # Auto-save every 5 minutes
-    if (-not (Set-PrefNode $prefs "BE.Prefs.AutoSave.DoSave"   "true")) { $missing += "BE.Prefs.AutoSave.DoSave" }
-    if (-not (Set-PrefNode $prefs "BE.Prefs.AutoSave.Interval" "5"))    { $missing += "BE.Prefs.AutoSave.Interval" }
+    if (-not (Set-PrefNode -Prefs $prefs -Node "BE.Prefs.AutoSave.DoSave"   -Value "true")) { $missing += "BE.Prefs.AutoSave.DoSave" }
+    if (-not (Set-PrefNode -Prefs $prefs -Node "BE.Prefs.AutoSave.Interval" -Value "5")) { $missing += "BE.Prefs.AutoSave.Interval" }
 
     # Timeline toggles: Linked Selection + Timeline Display Settings (wrench menu)
     foreach ($node in @(
-        'TL.PREFLinkedSelectionState',
-        'TL.PREFShowThroughEditsState',
-        'MZ.SQShowDuplicateMarkers'
-        # The preferences below are commented out for now because they are not written to the preference file until the default behaviour has changed:
-        # 'be.Prefs.Timeline.Show.Video.Thumbnails',
-        # 'be.Prefs.Timeline.Show.Video.Names',
-        # 'be.Prefs.Timeline.Show.Audio.Waveforms',
-        # 'be.Prefs.Timeline.Show.Audio.Names',
-        # 'be.Prefs.Timeline.Show.Proxy.Badges',
-        # 'TL.PREFShowFXBadges',
-    )) {
-        if (-not (Set-PrefNode $prefs $node "true")) { $missing += $node }
+            'TL.PREFLinkedSelectionState',
+            'TL.PREFShowThroughEditsState',
+            'MZ.SQShowDuplicateMarkers'
+            # The preferences below are commented out for now because they are not written to the preference file until the default behaviour has changed:
+            # 'be.Prefs.Timeline.Show.Video.Thumbnails',
+            # 'be.Prefs.Timeline.Show.Video.Names',
+            # 'be.Prefs.Timeline.Show.Audio.Waveforms',
+            # 'be.Prefs.Timeline.Show.Audio.Names',
+            # 'be.Prefs.Timeline.Show.Proxy.Badges',
+            # 'TL.PREFShowFXBadges',
+        )) {
+        if (-not (Set-PrefNode -Prefs $prefs -Node $node -Value "true")) { $missing += $node }
     }
 
     if ($missing.Count -gt 0) {
@@ -129,33 +131,34 @@ function Set-PremiereProPrefs {
 # MD5 and unlock the key's ACL so the write succeeds.
 function Set-FileAssociation {
     param($Extension, $ProgId)
-    $sid  = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-    $sub  = "software\microsoft\windows\currentversion\explorer\fileexts\$Extension\userchoice"
-    $ft   = [long][math]::Floor([datetime]::UtcNow.ToFileTime() / 10000000) * 10000000
+    $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $sub = "software\microsoft\windows\currentversion\explorer\fileexts\$Extension\userchoice"
+    $ft = [long][math]::Floor([datetime]::UtcNow.ToFileTime() / 10000000) * 10000000
     $data = [System.Text.Encoding]::Unicode.GetBytes(
-                $sub + $sid.ToLower() + $ProgId.ToLower() + $ft.ToString('x') +
-                "user choice set via windows user experience {d18b6dd5-6124-4341-9318-804003bafa0b}")
+        $sub + $sid.ToLower() + $ProgId.ToLower() + $ft.ToString('x') +
+        "user choice set via windows user experience {d18b6dd5-6124-4341-9318-804003bafa0b}")
     $hash = [Convert]::ToBase64String([Security.Cryptography.MD5]::Create().ComputeHash($data))
 
     $parent = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey(
-                  "SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\FileExts\$Extension", $true)
+        "SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\FileExts\$Extension", $true)
     try {
         # UserChoice has a restrictive DACL - unlock it so we can delete the key
         $uc = $parent.OpenSubKey("UserChoice",
-                  [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree,
-                  [System.Security.AccessControl.RegistryRights]::ChangePermissions)
+            [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree,
+            [System.Security.AccessControl.RegistryRights]::ChangePermissions)
         if ($uc) {
             $acl = $uc.GetAccessControl()
             $acl.SetAccessRule((New-Object System.Security.AccessControl.RegistryAccessRule(
-                [System.Security.Principal.WindowsIdentity]::GetCurrent().Name, 'FullControl', 'Allow')))
+                        [System.Security.Principal.WindowsIdentity]::GetCurrent().Name, 'FullControl', 'Allow')))
             $uc.SetAccessControl($acl)
             $uc.Close()
         }
         $parent.DeleteSubKey("UserChoice", $false)
-    } catch {}
+    }
+    catch {}
     $uc = $parent.CreateSubKey("UserChoice")
     $uc.SetValue("ProgId", $ProgId)
-    $uc.SetValue("Hash",   $hash)
+    $uc.SetValue("Hash", $hash)
     $uc.Close()
     $parent.Close()
 }
@@ -219,8 +222,8 @@ function Remove-SelfTemp {
 # Flags
 # -----------------------------------------------------------------------------
 
-$FULL    = $args -contains "--full"
-$FAST    = $args -contains "--fast"
+$FULL = $args -contains "--full"
+$FAST = $args -contains "--fast"
 $DRY_RUN = $args -contains "--dry-run"
 
 # No flag given - run the Fast pass inline now (quick config, nothing saved to
@@ -249,32 +252,32 @@ $RUN_SLOW = -not $FAST
 # Preflight
 # -----------------------------------------------------------------------------
 
-$PREMIERE_OK      = Test-Path "$HOME\Documents\Adobe\Premiere Pro"
+$PREMIERE_OK = Test-Path "$HOME\Documents\Adobe\Premiere Pro"
 # Premiere may rewrites its prefs while running - activating a set while it's running can get clobbered.
 $PREMIERE_RUNNING = $PREMIERE_OK -and ($null -ne (Get-Process -Name "Adobe Premiere Pro*" -ErrorAction SilentlyContinue))
-$WINGET_OK        = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
+$WINGET_OK = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
 
 # Premiere shortcut set + workspace we distribute
 $KYS_FILE = "LGG_25.1_WINDOWS.kys"
-$LAYOUT_FILE  = "UserWorkspace_LGG.xml"
+$LAYOUT_FILE = "UserWorkspace_LGG.xml"
 
 # Keyboard repeat
 $KB_Speed = (Get-ItemProperty -Path "HKCU:\Control Panel\Keyboard" -Name "KeyboardSpeed" -ErrorAction SilentlyContinue).KeyboardSpeed
 $KB_Delay = (Get-ItemProperty -Path "HKCU:\Control Panel\Keyboard" -Name "KeyboardDelay" -ErrorAction SilentlyContinue).KeyboardDelay
-$KB_OK    = ($KB_Speed -eq "31") -and ($KB_Delay -eq "0")
+$KB_OK = ($KB_Speed -eq "31") -and ($KB_Delay -eq "0")
 
 # Default-app targets - the apps we make the OS default for and the file types each
 # should own. WingetId ties each to its package so the friendly name comes from
 # $PKG_ALIAS (shared with the "install or update" checklist line). ProgId contains
 # "{ext}" for installers that register a per-extension ProgId (VLC -> VLC.mp4,
 # VLC.mkv, ...); otherwise it's a single ProgId used for every type (the 64-bit
-# Acrobat Reader). This one list drives the checklist and Set-DefaultApps.
+# Acrobat Reader). This one list drives the checklist and Set-DefaultApp.
 $DEFAULT_APPS = @(
     @{
         WingetId = "VideoLAN.VLC"
         Exe      = "$env:ProgramFiles\VideoLAN\VLC\vlc.exe"
         ProgId   = "VLC.{ext}"
-        Exts     = @('mp4','m4v','mov','mkv','avi','wmv','flv','webm','mpg','mpeg','m2ts','mts','ts','vob','mxf')
+        Exts     = @('mp4', 'm4v', 'mov', 'mkv', 'avi', 'wmv', 'flv', 'webm', 'mpg', 'mpeg', 'm2ts', 'mts', 'ts', 'vob', 'mxf')
     }
     @{
         WingetId = "Adobe.Acrobat.Reader.64-bit"
@@ -303,7 +306,8 @@ function Invoke-WingetApply($id) {
         $ErrorActionPreference = $eap
         # Swallow the "nothing to do" chatter; surface real upgrade/error output.
         if ($out -notmatch 'No available upgrade|No installed package') { Write-Host $out.TrimEnd() }
-    } else {
+    }
+    else {
         winget install --id $id --exact --silent --accept-package-agreements --accept-source-agreements
     }
 }
@@ -317,12 +321,12 @@ function Test-UvInstalled($pkg) {
 # matches <pattern> (per-machine 64- and 32-bit, plus per-user).
 function Test-AppInstalled($pattern) {
     foreach ($key in @(
-        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
-        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*",
-        "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*"
-    )) {
+            "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
+            "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*",
+            "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*"
+        )) {
         if (Get-ItemProperty $key -ErrorAction SilentlyContinue |
-            Where-Object { $_.DisplayName -match $pattern }) { return $true }
+                Where-Object { $_.DisplayName -match $pattern }) { return $true }
     }
     return $false
 }
@@ -340,19 +344,19 @@ function Test-PremiereApplied {
         $prefs = Join-Path $profileDir.FullName "Adobe Premiere Pro Prefs"
         if (-not (Test-Path $prefs)) { continue }
         $bytes = [System.IO.File]::ReadAllBytes($prefs)
-        if     ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE) { $enc = [System.Text.Encoding]::Unicode }
+        if ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE) { $enc = [System.Text.Encoding]::Unicode }
         elseif ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFE -and $bytes[1] -eq 0xFF) { $enc = [System.Text.Encoding]::BigEndianUnicode }
-        else                                                                          { $enc = [System.Text.Encoding]::UTF8 }
+        else { $enc = [System.Text.Encoding]::UTF8 }
         if ($enc.GetString($bytes) -match "<FE\.Prefs\.Shortcuts\.Filename>$([regex]::Escape($KYS_FILE))</FE\.Prefs\.Shortcuts\.Filename>") { return $true }
     }
     return $false
 }
 
-# Test-LutsPresent - true once at least one LUT has been downloaded into the work dir.
-function Test-LutsPresent { [bool](Get-ChildItem "$WorkDir\LUTs" -File -ErrorAction SilentlyContinue | Select-Object -First 1) }
+# Test-LutPresent - true once at least one LUT has been downloaded into the work dir.
+function Test-LutPresent { [bool](Get-ChildItem "$WorkDir\LUTs" -File -ErrorAction SilentlyContinue | Select-Object -First 1) }
 
-function Done     { param($msg); Write-Host ("  " + "[done]".PadRight(12)      + $msg) }
-function Skipped  { param($msg); Write-Host ("  " + "[skipped]".PadRight(12)   + $msg) }
+function Done { param($msg); Write-Host ("  " + "[done]".PadRight(12) + $msg) }
+function Skipped { param($msg); Write-Host ("  " + "[skipped]".PadRight(12) + $msg) }
 function WouldRun { param($msg); Write-Host ("  " + "[would run]".PadRight(12) + $msg) }
 
 # Show-Checklist - print the live state of every action: [done], [skipped] or [would
@@ -362,58 +366,59 @@ function WouldRun { param($msg); Write-Host ("  " + "[would run]".PadRight(12) +
 function Show-Checklist {
     $kbSpeed = (Get-ItemProperty "HKCU:\Control Panel\Keyboard" -Name "KeyboardSpeed" -ErrorAction SilentlyContinue).KeyboardSpeed
     $kbDelay = (Get-ItemProperty "HKCU:\Control Panel\Keyboard" -Name "KeyboardDelay" -ErrorAction SilentlyContinue).KeyboardDelay
-    $kbOk    = ($kbSpeed -eq "31") -and ($kbDelay -eq "0")
+    $kbOk = ($kbSpeed -eq "31") -and ($kbDelay -eq "0")
     # Input-language / keyboard-layout switch hotkeys disabled ("3" = Not Assigned).
-    $toggle    = Get-ItemProperty "HKCU:\Keyboard Layout\Toggle" -ErrorAction SilentlyContinue
+    $toggle = Get-ItemProperty "HKCU:\Keyboard Layout\Toggle" -ErrorAction SilentlyContinue
     $togglesOk = $toggle -and $toggle.Hotkey -eq "3" -and $toggle.'Language Hotkey' -eq "3" -and $toggle.'Layout Hotkey' -eq "3"
-    $sysOk     = $kbOk -and $togglesOk
+    $sysOk = $kbOk -and $togglesOk
     $premiereRunning = $PREMIERE_OK -and ($null -ne (Get-Process -Name "Adobe Premiere Pro*" -ErrorAction SilentlyContinue))
-    $ahkActive    = Test-Path $AhkScript
+    $ahkActive = Test-Path $AhkScript
     $ahkInstalled = [bool](Find-AhkExe)
 
     Write-Host ""
 
     # Premiere Pro - shortcuts, workspace, preferences and LUTs are the editing setup, so they
     # all require Premiere installed. (When Premiere is open the files are dropped but not activated.)
-    if (-not $PREMIERE_OK)    { Skipped  "Premiere Pro (shortcuts, workspace, preferences, LUTs) - Premiere Pro not installed" }
+    if (-not $PREMIERE_OK) { Skipped  "Premiere Pro (shortcuts, workspace, preferences, LUTs) - Premiere Pro not installed" }
     elseif ($premiereRunning) { Skipped  "Premiere Pro (shortcuts, workspace, preferences, LUTs) - Premiere Pro is open" }
-    elseif ((Test-PremiereApplied) -and (Test-LutsPresent)) { Done "Premiere Pro (shortcuts, workspace, preferences, LUTs)" }
-    else                      { WouldRun "Premiere Pro (shortcuts, workspace, preferences, LUTs)" }
+    elseif ((Test-PremiereApplied) -and (Test-LutPresent)) { Done "Premiere Pro (shortcuts, workspace, preferences, LUTs)" }
+    else { WouldRun "Premiere Pro (shortcuts, workspace, preferences, LUTs)" }
 
     # Activate AHK macros - applied whenever AutoHotkey is present. In --fast we might only
     # have a pre-installed AutoHotkey to work with (installing it is a Full-pass step).
-    if ($ahkActive)        { Done     "Activate AHK macros" }
+    if ($ahkActive) { Done     "Activate AHK macros" }
     elseif ($ahkInstalled) { WouldRun "Activate AHK macros" }
-    elseif ($FAST)         { Skipped  "Activate AHK macros - AutoHotkey not installed" }
-    else                   { WouldRun "Activate AHK macros" }
+    elseif ($FAST) { Skipped  "Activate AHK macros - AutoHotkey not installed" }
+    else { WouldRun "Activate AHK macros" }
 
     # System preferences - keyboard repeat speed/delay and the disabled layout-switch hotkeys
     if ($sysOk) { Done "System preferences" } else { WouldRun "System preferences" }
 
     # Default apps - one line covering every $DEFAULT_APPS target. "Done" once every
     # installed app owns its types; nothing to do if none of them are installed.
-    $names        = ($DEFAULT_APPS | ForEach-Object { Get-PkgAlias $_.WingetId }) -join ", "
+    $names = ($DEFAULT_APPS | ForEach-Object { Get-PkgAlias $_.WingetId }) -join ", "
     $installedApps = @($DEFAULT_APPS | Where-Object { Test-Path $_.Exe })
     $anyInstalled = $installedApps.Count -gt 0
-    $allDefault   = -not ($installedApps | Where-Object { -not (Test-DefaultOwned $_) })
-    if (-not $anyInstalled -and $FAST)      { Skipped  "Make default: $names - one or more not installed" }
+    $allDefault = -not ($installedApps | Where-Object { -not (Test-DefaultOwned $_) })
+    if (-not $anyInstalled -and $FAST) { Skipped  "Make default: $names - one or more not installed" }
     elseif ($anyInstalled -and $allDefault) { Done     "Make default: $names" }
-    else                                    { WouldRun "Make default: $names" }
+    else { WouldRun "Make default: $names" }
 
     # Install or update apps - winget packages, non-winget programs (Premiere Pro plugins) and uv tools
     # (each entry paired with its "already installed?" check). Installation is slow, so it runs last.
     $apps = @()
-    foreach ($pkg in $CORE_PKGS)              { $apps += @{ name = (Get-PkgAlias $pkg); ok = (Test-WingetInstalled $pkg) } }
+    foreach ($pkg in $CORE_PKGS) { $apps += @{ name = (Get-PkgAlias $pkg); ok = (Test-WingetInstalled $pkg) } }
     if ($FULL) { foreach ($pkg in $FULL_PKGS) { $apps += @{ name = (Get-PkgAlias $pkg); ok = (Test-WingetInstalled $pkg) } } }
     if ($PREMIERE_OK) {
         $apps += @{ name = "Mister Horse"; ok = (Test-MisterHorseInstalled) }
-        $apps += @{ name = "Flicker Free";                 ok = (Test-FlickerFreeInstalled) }
+        $apps += @{ name = "Flicker Free"; ok = (Test-FlickerFreeInstalled) }
     }
-    foreach ($pkg in $CORE_UV)                { $apps += @{ name = $pkg; ok = (Test-UvInstalled $pkg) } }
+    foreach ($pkg in $CORE_UV) { $apps += @{ name = $pkg; ok = (Test-UvInstalled $pkg) } }
 
     if ($FAST) {
         Skipped ("Install or update: " + (($apps | ForEach-Object { $_.name }) -join ", "))
-    } else {
+    }
+    else {
         $done = @($apps | Where-Object { $_.ok }      | ForEach-Object { $_.name })
         $todo = @($apps | Where-Object { -not $_.ok }  | ForEach-Object { $_.name })
         if ($done.Count -gt 0) { Done     ("Install or update: " + ($done -join ", ")) }
@@ -428,7 +433,7 @@ function Show-Checklist {
 # -----------------------------------------------------------------------------
 # Invoke-FastPass - lightweight preference changes only (no downloads/installs).
 # Invoke-SlowPass - everything that downloads or installs. Setting default apps is config
-# that needs the app present, so Set-DefaultApps runs in both phases (idempotent: it
+# that needs the app present, so Set-DefaultApp runs in both phases (idempotent: it
 # re-checks the current default and no-ops once the app already owns its types). The
 # bare command runs Invoke-FastPass inline then hands off to a Full pass that runs
 # Invoke-SlowPass; --fast runs Invoke-FastPass only and --full runs both.
@@ -443,20 +448,20 @@ function Test-DefaultOwned($app) {
     $cur -eq (Get-DefaultProgId $app $ext)
 }
 
-function Set-DefaultApps {
+function Set-DefaultApp {
     # Point Explorer's per-extension UserChoice at each $DEFAULT_APPS target's ProgIds.
     # Each app is gated on being installed and re-checks the current default, so it's a
     # no-op once owned and safe to call from both phases.
     foreach ($app in $DEFAULT_APPS) {
         if (-not (Test-Path $app.Exe)) { continue }
-        if (Test-DefaultOwned $app)        { continue }
+        if (Test-DefaultOwned $app) { continue }
         foreach ($ext in $app.Exts) {
             try { Set-FileAssociation ".$ext" (Get-DefaultProgId $app $ext) } catch {}
         }
     }
 }
 
-function Install-AhkMacros {
+function Install-AhkScript {
     # Download the AHK macro script into the work dir and launch it now so the
     # shortcuts work immediately. The file's presence there is the "done" marker.
     if (Test-Path $AhkScript) { return }
@@ -474,8 +479,8 @@ function Invoke-FastPass {
     # Premiere Pro shortcuts, workspace & LUTs
     if ($PREMIERE_OK) {
         foreach ($profileDir in Get-ChildItem "$HOME\Documents\Adobe\Premiere Pro\*\Profile-*" -Directory -ErrorAction SilentlyContinue) {
-            $prefs   = Join-Path $profileDir.FullName "Adobe Premiere Pro Prefs"
-            $winDir  = Join-Path $profileDir.FullName "Win"
+            $prefs = Join-Path $profileDir.FullName "Adobe Premiere Pro Prefs"
+            $winDir = Join-Path $profileDir.FullName "Win"
             $layouts = Join-Path $profileDir.FullName "Layouts"
 
             # Premiere creates Win/ and Layouts/ inside each profile, so we write into
@@ -488,10 +493,11 @@ function Invoke-FastPass {
 
             if ($PREMIERE_RUNNING) {
                 Write-Host "  [warn] Premiere Pro is running - files dropped but not activated"
-            } elseif (Test-Path $prefs) {
+            }
+            elseif (Test-Path $prefs) {
                 # $profileDir.Parent.Name is the version folder (e.g. "25.0"), so each
                 # profile's warning is tagged with the Premiere version it came from.
-                Set-PremiereProPrefs $prefs $KYS_FILE $wsName $profileDir.Parent.Name
+                Set-PremierePro -Prefs $prefs -KysFile $KYS_FILE -WsName $wsName -Version $profileDir.Parent.Name
             }
         }
 
@@ -506,7 +512,8 @@ function Invoke-FastPass {
                     curl.exe -s --output-dir "$lutDir" -O $lut.download_url
                 }
             }
-        } catch {
+        }
+        catch {
             Write-Host "  [warn] Could not fetch LUTs: $_"
         }
     }
@@ -514,7 +521,7 @@ function Invoke-FastPass {
     # AHK macros - apply now if AutoHotkey is already installed (covers --fast on a
     # machine that has it). On a Full run AutoHotkey is installed in Invoke-SlowPass, which
     # applies them there instead - so only act here when it's already present.
-    if (Find-AhkExe) { Install-AhkMacros }
+    if (Find-AhkExe) { Install-AhkScript }
 
     # Keyboard preferences
     if (-not $KB_OK) {
@@ -564,8 +571,8 @@ public class Win32Shell {
     }
     [Win32Shell]::SHChangeNotify(0x08000000, 0, [IntPtr]::Zero, [IntPtr]::Zero)  # SHCNE_ASSOCCHANGED
 
-    # Default apps - config that needs the app present (see Set-DefaultApps)
-    Set-DefaultApps
+    # Default apps - config that needs the app present (see Set-DefaultApp)
+    Set-DefaultApp
 }
 
 function Invoke-SlowPass {
@@ -573,21 +580,21 @@ function Invoke-SlowPass {
     foreach ($pkg in $CORE_PKGS) { Invoke-WingetApply $pkg }
     # Refresh PATH so newly installed tools (uv, etc.) are available in this session
     $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
-                [System.Environment]::GetEnvironmentVariable("Path", "User")
+    [System.Environment]::GetEnvironmentVariable("Path", "User")
     # --quiet silences uv's resolve/install progress on success but still prints
     # warnings and errors, so a failed install is surfaced without any capture dance.
     foreach ($pkg in $CORE_UV) { uv tool install $pkg --upgrade --quiet }
     # Add uv's tool bin dir to PATH permanently and refresh for this session.
     uv tool update-shell --quiet
     $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
-                [System.Environment]::GetEnvironmentVariable("Path", "User")
+    [System.Environment]::GetEnvironmentVariable("Path", "User")
 
     # Full-only managed packages
     if ($FULL) {
         foreach ($pkg in $FULL_PKGS) { Invoke-WingetApply $pkg }
         # Refresh PATH so newly installed tools (AutoHotkey, etc.) are available in this session
         $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
-                    [System.Environment]::GetEnvironmentVariable("Path", "User")
+        [System.Environment]::GetEnvironmentVariable("Path", "User")
     }
 
     # Tell already-running apps to re-read the environment so the new PATH is picked
@@ -607,10 +614,10 @@ public class Win32Env {
     [Win32Env]::SendMessageTimeout($HWND_BROADCAST, 0x001A, [IntPtr]::Zero, "Environment", 2, 5000, [ref]$res) | Out-Null  # WM_SETTINGCHANGE
 
     # Default apps - now that VLC/Acrobat are installed (covers a fresh machine)
-    Set-DefaultApps
+    Set-DefaultApp
 
     # AHK macros - AutoHotkey was installed above on a Full run (or already present)
-    Install-AhkMacros
+    Install-AhkScript
 
     # Non-winget packages (like Premiere Pro plugins); the plugins themselves are then added
     # from within it on first launch.
@@ -680,6 +687,7 @@ try {
     Show-Checklist
     Write-Host "  You're ready to roll!"
     Write-Host ""
-} finally {
+}
+finally {
     Remove-SelfTemp
 }

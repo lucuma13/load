@@ -41,7 +41,7 @@ Describe "load-win.ps1 encoding (Windows PowerShell 5.1 safe)" {
 
     It "has no byte-order mark" {
         $hasBom = $scriptBytes.Length -ge 3 -and
-                  $scriptBytes[0] -eq 0xEF -and $scriptBytes[1] -eq 0xBB -and $scriptBytes[2] -eq 0xBF
+        $scriptBytes[0] -eq 0xEF -and $scriptBytes[1] -eq 0xBB -and $scriptBytes[2] -eq 0xBF
         $hasBom | Should -BeFalse
     }
 
@@ -79,13 +79,14 @@ Describe "winget package ids resolve" -Tag 'Live' {
 Describe "Plugin download links" -Tag 'Live' {
     $links = @(
         @{ Name = 'Mister Horse Product Manager'; Url = 'https://misterhorse.com/downloads/product-manager/win' }
-        @{ Name = 'Flicker Free';                 Url = 'https://www.digitalanarchy.com/downloads/flickerfree_229_AE.zip' }
+        @{ Name = 'Flicker Free'; Url = 'https://www.digitalanarchy.com/downloads/flickerfree_229_AE.zip' }
     )
 
     It "<Name> link is live" -ForEach $links {
         try {
             $resp = Invoke-WebRequest -Uri $Url -Method Head -MaximumRedirection 5 -UseBasicParsing -TimeoutSec 30
-        } catch {
+        }
+        catch {
             # Some servers reject HEAD - fall back to a 1-byte ranged GET.
             $resp = Invoke-WebRequest -Uri $Url -Headers @{ Range = 'bytes=0-0' } -MaximumRedirection 5 -UseBasicParsing -TimeoutSec 30
         }
@@ -106,7 +107,8 @@ Describe "uv tool ids resolve on PyPI" -Tag 'Live' {
     It "<_> exists on PyPI" -ForEach $uvTools {
         try {
             $resp = Invoke-WebRequest -Uri "https://pypi.org/pypi/$_/json" -Method Head -MaximumRedirection 5 -UseBasicParsing -TimeoutSec 30
-        } catch {
+        }
+        catch {
             $resp = Invoke-WebRequest -Uri "https://pypi.org/pypi/$_/json" -MaximumRedirection 5 -UseBasicParsing -TimeoutSec 30
         }
         [int]$resp.StatusCode | Should -Be 200 -Because "'$_' did not resolve on PyPI (renamed, delisted, or mistyped?)"
