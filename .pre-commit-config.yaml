@@ -4,7 +4,6 @@ exclude: |
   (?x)^(
     src/data/.*|
     tests/fixtures/.*|
-    .*\.DS_Store
   )$
 repos:
   # Pre-commit config sanity

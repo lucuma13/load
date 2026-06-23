@@ -1,16 +1,21 @@
 ## 🚗 Set Up Workstation
 
 Run the line for your OS. It runs on --fast mode first, then
-pauses and continues into --full on a keypress.
+pauses and asks whether to continue into --full.
 
 * macOS:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/lucuma13/load/main/src/load-mac.sh | bash
+bash <(curl -fsSL https://raw.githubusercontent.com/lucuma13/load/main/src/load-mac.sh)
 ```
 
 * Windows:
 ```powershell
-Invoke-WebRequest -Uri "https://raw.githubusercontent.com/lucuma13/load/main/src/load-win.ps1" -UseBasicParsing -OutFile "$env:TEMP\load-win.ps1"; powershell -ExecutionPolicy Bypass -File "$env:TEMP\load-win.ps1"
+& ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing -Uri "https://raw.githubusercontent.com/lucuma13/load/main/src/load-win.ps1").Content))
+```
+
+* Windows (alternative):
+```powershell
+$f="$env:TEMP\load-win.ps1"; Invoke-WebRequest -Uri "https://raw.githubusercontent.com/lucuma13/load/main/src/load-win.ps1" -UseBasicParsing -OutFile $f -ErrorAction Stop; if(-not ((Get-Content $f -Raw).TrimEnd().EndsWith('# === END load-win.ps1 ==='))){throw "download incomplete - try again"}; powershell -ExecutionPolicy Bypass -File $f
 ```
 
 

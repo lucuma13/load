@@ -4,12 +4,15 @@
   "description": "macOS bats test tooling for the load workstation setup scripts",
   "private": true,
   "scripts": {
-    "test": "bats tests/",
-    "test:ci": "bats --filter-tags '!live' tests/"
+    "check": "bash -n src/load-mac.sh",
+    "lint": "shellcheck src/load-mac.sh",
+    "_comment": "pin bats to system bash 3.2 to prevent deadlocks on the bats-preprocess here-string.",
+    "test": "PATH=/bin:$PATH bats tests/",
+    "test:ci": "PATH=/bin:$PATH bats --filter-tags '!live' tests/"
   },
   "devDependencies": {
     "bats": "^1.13.0",
     "bats-assert": "^2.2.4",
-    "bats-support": "git+https://github.com/bats-core/bats-support.git#semver:^0.3.0"
+    "bats-support": "^0.3.0"
   }
 }

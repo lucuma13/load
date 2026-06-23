@@ -6,8 +6,12 @@ Windows workstation setup script
 Copyright (c) 2026 Luis Gomez Gutierrez
 
 .EXAMPLE
-# With interactive menu (optional flags: --fast/--full/--dry-run):
-Invoke-WebRequest -Uri "https://raw.githubusercontent.com/lucuma13/load/main/src/load-win.ps1" -UseBasicParsing -OutFile "$env:TEMP\load-win.ps1"; powershell -ExecutionPolicy Bypass -File "$env:TEMP\load-win.ps1"
+# Stream and run in memory (avoids MOTW / blocking GPO). Flags: --fast/--full/--dry-run.
+& ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing -Uri "https://raw.githubusercontent.com/lucuma13/load/main/src/load-win.ps1").Content))
+
+.EXAMPLE
+# Alternatively download, verify and run. Flags: --fast/--full/--dry-run.
+$f="$env:TEMP\load-win.ps1"; Invoke-WebRequest -Uri "https://raw.githubusercontent.com/lucuma13/load/main/src/load-win.ps1" -UseBasicParsing -OutFile $f -ErrorAction Stop; if(-not ((Get-Content $f -Raw).TrimEnd().EndsWith('# === END load-win.ps1 ==='))){throw "download incomplete - try again"}; powershell -ExecutionPolicy Bypass -File $f
 #>
 
 $ErrorActionPreference = "Continue"
@@ -50,9 +54,7 @@ function Get-WorkspaceName {
 function Set-PrefNode {
     param($prefs, $node, $value)
     $bytes = [System.IO.File]::ReadAllBytes($prefs)
-    if ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE) { $enc = [System.Text.Encoding]::Unicode }
-    elseif ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFE -and $bytes[1] -eq 0xFF) { $enc = [System.Text.Encoding]::BigEndianUnicode }
-    else { $enc = [System.Text.Encoding]::UTF8 }
+    $enc = [System.Text.Encoding]::UTF8
     $content = $enc.GetString($bytes)
     $open = "<$node>"
     $close = "</$node>"
@@ -201,71 +203,6 @@ $PKG_ALIAS = @{
 }
 function Get-PkgAlias($id) { if ($PKG_ALIAS.ContainsKey($id)) { $PKG_ALIAS[$id] } else { $id } }
 
-# Sourced as a library (tests set $env:LOAD_LIB): stop here, run nothing below.
-if ($env:LOAD_LIB) { return }
-
-# Remove-SelfTemp - delete our own copy when we were launched from a temp file. The
-# documented entrypoint downloads the script to %TEMP%, and the fast->full hand-off
-# rewrites the same path; PowerShell loads the whole script into memory before
-# running, so deleting the file mid-run is safe. Only ever removes a copy under
-# %TEMP% - a checkout or any other location is left untouched.
-function Remove-SelfTemp {
-    # Guard on $env:TEMP being non-empty: StartsWith("") is true for every path, so a
-    # blank TEMP must NOT be allowed to match (and delete) an arbitrary script path.
-    $temp = $env:TEMP
-    if ($temp -and $PSCommandPath -and $PSCommandPath.StartsWith($temp, [System.StringComparison]::OrdinalIgnoreCase)) {
-        Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
-    }
-}
-
-# -----------------------------------------------------------------------------
-# Flags
-# -----------------------------------------------------------------------------
-
-$FULL = $args -contains "--full"
-$FAST = $args -contains "--fast"
-$DRY_RUN = $args -contains "--dry-run"
-
-# No flag given - run the Fast pass inline now (quick config, nothing saved to
-# disk), then pause and hand off to the Full pass (see the Dispatch section, which
-# only then downloads the script to a temp file). Bail if there's no interactive
-# console (e.g. CI) so we don't run a heavy install on an unattended box.
-$AUTO = $false
-if (-not ($FULL -or $FAST -or $DRY_RUN)) {
-    if ([System.Console]::IsInputRedirected) {
-        Write-Error "No setup flag given and no interactive console. Pass --fast or --full."
-        Remove-SelfTemp
-        exit 1
-    }
-    $AUTO = $true
-    $FAST = $true
-}
-
-# Phase gates. Invoke-FastPass applies lightweight config; Invoke-SlowPass does the
-# downloads/installs. The bare command runs Fast inline then hands off to a Full
-# pass (marked with LOAD_FROM_FAST) that runs Slow only - so Fast is skipped there
-# to avoid repeating the same actions.
-$RUN_FAST = -not $env:LOAD_FROM_FAST
-$RUN_SLOW = -not $FAST
-
-# -----------------------------------------------------------------------------
-# Preflight
-# -----------------------------------------------------------------------------
-
-$PREMIERE_OK = Test-Path "$HOME\Documents\Adobe\Premiere Pro"
-# Premiere may rewrites its prefs while running - activating a set while it's running can get clobbered.
-$PREMIERE_RUNNING = $PREMIERE_OK -and ($null -ne (Get-Process -Name "Adobe Premiere Pro*" -ErrorAction SilentlyContinue))
-$WINGET_OK = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
-
-# Premiere shortcut set + workspace we distribute
-$KYS_FILE = "LGG_25.1_WINDOWS.kys"
-$LAYOUT_FILE = "UserWorkspace_LGG.xml"
-
-# Keyboard repeat
-$KB_Speed = (Get-ItemProperty -Path "HKCU:\Control Panel\Keyboard" -Name "KeyboardSpeed" -ErrorAction SilentlyContinue).KeyboardSpeed
-$KB_Delay = (Get-ItemProperty -Path "HKCU:\Control Panel\Keyboard" -Name "KeyboardDelay" -ErrorAction SilentlyContinue).KeyboardDelay
-$KB_OK = ($KB_Speed -eq "31") -and ($KB_Delay -eq "0")
-
 # Default-app targets - the apps we make the OS default for and the file types each
 # should own. WingetId ties each to its package so the friendly name comes from
 # $PKG_ALIAS (shared with the "install or update" checklist line). ProgId contains
@@ -286,6 +223,62 @@ $DEFAULT_APPS = @(
         Exts     = @('pdf')
     }
 )
+
+# Remove-SelfTemp - delete our own copy when we were launched from a temp file. The
+# documented entrypoint downloads the script to %TEMP% before running it; PowerShell
+# loads the whole script into memory first, so deleting the file mid-run is safe. Only
+# ever removes a copy under %TEMP% - a checkout or any other location is left untouched.
+function Remove-SelfTemp {
+    # $path/$temp default to the live script path and TEMP, but are injectable so the
+    # guard can be unit-tested. Guard on $temp being non-empty: StartsWith("") is true
+    # for every path, so a blank TEMP must NOT match (and delete) an arbitrary script path.
+    param([string]$path = $PSCommandPath, [string]$temp = $env:TEMP)
+    if ($temp -and $path -and $path.StartsWith($temp, [System.StringComparison]::OrdinalIgnoreCase)) {
+        Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# Sourced as a library (tests set $env:LOAD_LIB): stop here, run nothing below.
+if ($env:LOAD_LIB) { return }
+
+# -----------------------------------------------------------------------------
+# Flags
+# -----------------------------------------------------------------------------
+
+$FULL = $args -contains "--full"
+$FAST = $args -contains "--fast"
+$DRY_RUN = $args -contains "--dry-run"
+
+# No flag given - run the Fast pass inline now (quick config), then pause and run the
+# Full pass in this same process. Bail if there's no interactive console (e.g. CI) so
+# we don't run a heavy install on an unattended box.
+$AUTO = $false
+if (-not ($FULL -or $FAST -or $DRY_RUN)) {
+    if ([System.Console]::IsInputRedirected) {
+        Write-Error "No setup flag given and no interactive console. Pass --fast or --full."
+        Remove-SelfTemp
+        exit 1
+    }
+    $AUTO = $true
+}
+
+# -----------------------------------------------------------------------------
+# Preflight
+# -----------------------------------------------------------------------------
+
+$PREMIERE_OK = Test-Path "$HOME\Documents\Adobe\Premiere Pro"
+# Premiere may rewrites its prefs while running - activating a set while it's running can get clobbered.
+$PREMIERE_RUNNING = $PREMIERE_OK -and ($null -ne (Get-Process -Name "Adobe Premiere Pro*" -ErrorAction SilentlyContinue))
+$WINGET_OK = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
+
+# Premiere shortcut set + workspace we distribute
+$KYS_FILE = "LGG_25.1_WINDOWS.kys"
+$LAYOUT_FILE = "UserWorkspace_LGG.xml"
+
+# Keyboard repeat
+$KB_Speed = (Get-ItemProperty -Path "HKCU:\Control Panel\Keyboard" -Name "KeyboardSpeed" -ErrorAction SilentlyContinue).KeyboardSpeed
+$KB_Delay = (Get-ItemProperty -Path "HKCU:\Control Panel\Keyboard" -Name "KeyboardDelay" -ErrorAction SilentlyContinue).KeyboardDelay
+$KB_OK = ($KB_Speed -eq "31") -and ($KB_Delay -eq "0")
 
 function Test-WingetInstalled($id) {
     if (-not $WINGET_OK) { return $false }
@@ -343,11 +336,8 @@ function Test-PremiereApplied {
     foreach ($profileDir in Get-ChildItem "$HOME\Documents\Adobe\Premiere Pro\*\Profile-*" -Directory -ErrorAction SilentlyContinue) {
         $prefs = Join-Path $profileDir.FullName "Adobe Premiere Pro Prefs"
         if (-not (Test-Path $prefs)) { continue }
-        $bytes = [System.IO.File]::ReadAllBytes($prefs)
-        if ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE) { $enc = [System.Text.Encoding]::Unicode }
-        elseif ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFE -and $bytes[1] -eq 0xFF) { $enc = [System.Text.Encoding]::BigEndianUnicode }
-        else { $enc = [System.Text.Encoding]::UTF8 }
-        if ($enc.GetString($bytes) -match "<FE\.Prefs\.Shortcuts\.Filename>$([regex]::Escape($KYS_FILE))</FE\.Prefs\.Shortcuts\.Filename>") { return $true }
+        $content = [System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($prefs))
+        if ($content -match "<FE\.Prefs\.Shortcuts\.Filename>$([regex]::Escape($KYS_FILE))</FE\.Prefs\.Shortcuts\.Filename>") { return $true }
     }
     return $false
 }
@@ -652,36 +642,31 @@ public class Win32Env {
 }
 
 # -----------------------------------------------------------------------------
-# Dispatch - Invoke-FastPass inline; the bare command then hands off to a Full pass,
-# and Invoke-SlowPass does the downloads/installs.
+# Dispatch - Invoke-FastPass applies the quick config; Invoke-SlowPass does the
+# downloads/installs. Both run in this same process.
 # -----------------------------------------------------------------------------
 
 # Wrapped so Remove-SelfTemp always runs (finally runs even on `exit`), deleting our
-# %TEMP% copy of the script on every path - dry-run, fast, full, and both sides of
-# the hand-off (the child cleans its own copy on completion; the parent's finally is
-# then a no-op).
+# %TEMP% copy of the script on every exit path - dry-run, fast and full.
 try {
     # --dry-run just prints the checklist (a preview, since nothing has run), then stops.
     if ($DRY_RUN) { Show-Checklist; exit 0 }
 
-    if ($RUN_FAST) { Invoke-FastPass }
+    # Fast pass runs for every mode (--fast, --full, and the bare command).
+    Invoke-FastPass
 
+    # The bare command pauses between the quick config and the heavy installs. Enter (or
+    # y) continues to the Full pass; n stops here with just the fast setup applied.
     if ($AUTO) {
-        # Fast pass finished. Only now save the script to a temp file - so nothing is
-        # left on disk if the user stops here - run the Full pass from it, then the
-        # finally below deletes it. The Full pass prints the post-install summary at
-        # the end (its live state covers what this Fast pass just did too), so we
-        # don't print one here.
-        Read-Host "  Fast loading is complete. Press enter to continue on FULL mode" | Out-Null
-        $self = "$env:TEMP\load-win.ps1"
-        Invoke-WebRequest -Uri "https://raw.githubusercontent.com/lucuma13/load/main/src/load-win.ps1" -UseBasicParsing |
-            Set-Content $self -Encoding UTF8
-        $env:LOAD_FROM_FAST = "1"
-        powershell -ExecutionPolicy Bypass -File $self --full
-        exit $LASTEXITCODE
+        $ans = Read-Host "  Fast loading is complete. Continue to FULL mode (downloads + installs)? [Y/n]"
+        if ($ans -match '^\s*n') {
+            Write-Host "  Stopped after fast setup - re-run with --full to install."
+        }
+        else {
+            $FULL = $true
+        }
     }
-
-    if ($RUN_SLOW) { Invoke-SlowPass }
+    if ($FULL) { Invoke-SlowPass }
 
     # End state summary.
     Show-Checklist
@@ -691,3 +676,8 @@ try {
 finally {
     Remove-SelfTemp
 }
+
+# Completeness sentinel - MUST be the last line. The launch command verifies the
+# downloaded file ends with this before executing, so a truncated download (e.g. a
+# dropped connection) is rejected instead of run as an empty/partial script.
+# === END load-win.ps1 ===

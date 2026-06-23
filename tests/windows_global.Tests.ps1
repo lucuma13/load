@@ -53,6 +53,29 @@ Describe "load-win.ps1 encoding (Windows PowerShell 5.1 safe)" {
     }
 }
 
+# The script ends with a sentinel line so the launch command can confirm the download
+# arrived whole - a truncated copy (dropped connection) loses the tail and is rejected
+# before it runs. This guards the sentinel's presence so the check can't silently rot.
+Describe "load-win.ps1 completeness sentinel" {
+    BeforeAll {
+        $script:sentinel = '# === END load-win.ps1 ==='
+        $script:scriptText = Get-Content "$PSScriptRoot/../src/load-win.ps1" -Raw
+    }
+
+    It "is the last line of the distributed script" {
+        $scriptText.TrimEnd() | Should -BeLike "*$sentinel"
+    }
+
+    It "a truncated copy fails the sentinel check" {
+        $truncated = $scriptText.Substring(0, [int]($scriptText.Length / 2))
+        # The sentinel string also appears in the .EXAMPLE header near the top, so a
+        # truncated copy still *contains* it - which is exactly why the launch check must
+        # test ends-with (the tail arrived), not merely presence.
+        $truncated | Should -BeLike "*$sentinel*" -Because "the header copy is within the first half"
+        $truncated.TrimEnd() | Should -Not -BeLike "*$sentinel"
+    }
+}
+
 # These hit the network to confirm the hard-coded plugin installer URLs are still live. Exclude them
 # on an offline run with:  Invoke-Pester -ExcludeTag Live
 
@@ -112,5 +135,57 @@ Describe "uv tool ids resolve on PyPI" -Tag 'Live' {
             $resp = Invoke-WebRequest -Uri "https://pypi.org/pypi/$_/json" -MaximumRedirection 5 -UseBasicParsing -TimeoutSec 30
         }
         [int]$resp.StatusCode | Should -Be 200 -Because "'$_' did not resolve on PyPI (renamed, delisted, or mistyped?)"
+    }
+}
+
+# Remove-SelfTemp only ever deletes a copy of the script under $env:TEMP. The blank-TEMP
+# guard matters because StartsWith("") is true for every path - a blank TEMP must NOT be
+# allowed to match and delete an arbitrary script location.
+Describe "Remove-SelfTemp temp-dir guard" {
+    BeforeAll {
+        $env:LOAD_LIB = "1"
+        . "$PSScriptRoot\..\src\load-win.ps1"
+        $env:LOAD_LIB = $null
+    }
+
+    # The script is deleted only when it sits under a non-empty TEMP. The blank-TEMP row
+    # guards the StartsWith("") footgun (every path "starts with" the empty string).
+    It "<Name>" -ForEach @(
+        @{ Name = 'deletes a copy under TEMP'; UnderTemp = $true; BlankTemp = $false; ShouldDelete = $true }
+        @{ Name = 'leaves a copy outside TEMP untouched'; UnderTemp = $false; BlankTemp = $false; ShouldDelete = $false }
+        @{ Name = 'deletes nothing when TEMP is blank'; UnderTemp = $false; BlankTemp = $true; ShouldDelete = $false }
+    ) {
+        $temp = Join-Path $TestDrive "temp"
+        New-Item -ItemType Directory -Force -Path $temp | Out-Null
+        $self = if ($UnderTemp) { Join-Path $temp "load-win.ps1" } else { Join-Path $TestDrive "elsewhere.ps1" }
+        Set-Content $self "x"
+
+        Remove-SelfTemp -path $self -temp $(if ($BlankTemp) { "" } else { $temp })
+
+        Test-Path $self | Should -Be (-not $ShouldDelete)
+    }
+}
+
+# Show-Checklist derives each default app's friendly name from its WingetId via the
+# package lists and $PKG_ALIAS, so a rename/typo there shows a raw id (or nothing).
+# Membership is computed at discovery so each id gets its own named test.
+Describe "Default-app / package-list consistency" {
+    BeforeDiscovery {
+        $env:LOAD_LIB = "1"
+        . "$PSScriptRoot\..\src\load-win.ps1"
+        $env:LOAD_LIB = $null
+        $allPkgs = @($CORE_PKGS + $FULL_PKGS)
+        $defaultAppIds = @($DEFAULT_APPS | ForEach-Object {
+                @{ Id = $_.WingetId; InList = ($allPkgs -contains $_.WingetId) } })
+        $aliasIds = @($allPkgs | ForEach-Object {
+                @{ Id = $_; HasAlias = $PKG_ALIAS.ContainsKey($_) } })
+    }
+
+    It "default app <Id> is listed in CORE_PKGS/FULL_PKGS" -ForEach $defaultAppIds {
+        $InList | Should -BeTrue -Because "$Id is a default-app target but missing from the install lists"
+    }
+
+    It "package <Id> has a friendly alias in PKG_ALIAS" -ForEach $aliasIds {
+        $HasAlias | Should -BeTrue -Because "$Id has no entry in PKG_ALIAS, so it shows as a raw id"
     }
 }

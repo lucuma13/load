@@ -3,9 +3,13 @@
 # Copyright (c) 2026 Luis Gómez Gutiérrez
 #
 # Usage:
-# curl -fsSL https://raw.githubusercontent.com/lucuma13/load/main/src/load-mac.sh | bash
-
-SELF_URL="https://raw.githubusercontent.com/lucuma13/load/main/src/load-mac.sh"
+# bash <(curl -fsSL https://raw.githubusercontent.com/lucuma13/load/main/src/load-mac.sh)
+#
+# Process substitution is the recommended form — flags pass straight through, e.g.
+# `bash <(curl -fsSL …) --full`. The script's work is wrapped in main() and invoked
+# on the last line, so bash reads and parses the whole script before running anything:
+# a truncated download can't half-execute, and a piped (`curl | bash`) download can't
+# have its tail drained by a child process (e.g. brew's ca-certificates keychain step).
 
 # =============================================================================
 # Function library
@@ -203,10 +207,10 @@ case " $MODES " in *" full "*) FULL=true ;; esac
 case " $MODES " in *" dryrun "*) DRY_RUN=true ;; esac
 
 # No flag given — run the Fast pass inline now (quick config), then pause and
-# hand off to the Full pass (see the Dispatch section, which only then downloads
-# the script to a temp file). We need a terminal to prompt for that hand-off; stdin
-# is the piped script under curl | bash, so probe /dev/tty rather than stdin.
-# Bail if there is none (e.g. CI) so we don't run a heavy install unattended.
+# continue into the Full pass in this same process (see the Dispatch section). We
+# need a terminal to prompt for that hand-off; under process substitution stdin may
+# be redirected, so probe /dev/tty rather than stdin. Bail if there is none (e.g.
+# CI) so we don't run a heavy install unattended.
 AUTO=false
 if [ -z "$MODES" ]; then
   { exec 3<>/dev/tty; } 2>/dev/null || {
@@ -219,29 +223,11 @@ if [ -z "$MODES" ]; then
 fi
 
 # Phase gates. run_fast applies lightweight config; run_slow does the
-# downloads/installs. The bare command runs Fast inline then hands off to a Full
-# pass (marked with LOAD_FROM_FAST) that runs Slow only — so Fast is skipped there
-# to avoid repeating the same actions.
+# downloads/installs. Both run in this one process: the bare command runs Fast
+# inline then continues into Slow; --fast runs Fast only; --full runs both.
 RUN_FAST=true
-[ -n "${LOAD_FROM_FAST:-}" ] && RUN_FAST=false
 RUN_SLOW=true
 $FAST && RUN_SLOW=false
-
-# Re-exec from a real file when piped (curl | bash) for non-fast runs. Reading
-# the script from stdin lets child processes (e.g. brew's ca-certificates
-# keychain step) drain the remaining script out of the pipe, silently skipping
-# later sections such as Pro Video Formats. Running from a file makes this
-# impossible. --fast runs none of the stdin-draining steps, so it stays on stdin;
-# --dry-run only reads state (nothing to drain), so it stays on stdin too.
-# Run the downloaded copy as a child (not exec) so we can delete it on the way out;
-# the EXIT trap also clears it if the download itself fails under set -e.
-if ! $FAST && ! $DRY_RUN && { [ ! -r "${BASH_SOURCE[0]:-}" ] || [ "${BASH_SOURCE[0]:-}" = "bash" ]; }; then
-  TMP="$(mktemp -t load-mac)"
-  trap 'rm -f "$TMP"' EXIT
-  curl -fsSL "$SELF_URL" -o "$TMP"
-  bash "$TMP" "$@" && code=0 || code=$?
-  exit $code
-fi
 
 # -----------------------------------------------------------------------------
 # Preflight
@@ -428,8 +414,7 @@ checklist() {
 # run_fast — lightweight preference changes only (no downloads/installs).
 # run_slow — everything that downloads or installs, plus the one Finder tweak
 # that needs python3 from Command Line Tools. The bare command runs run_fast
-# inline then hands off to a Full pass that runs run_slow; --fast runs run_fast
-# only and --full runs both.
+# inline then continues into run_slow; --fast runs run_fast only and --full runs both.
 
 run_fast() {
   # System preferences
@@ -721,44 +706,48 @@ PY
 }
 
 # -----------------------------------------------------------------------------
-# Dispatch — run_fast inline; the bare command then hands off to a Full pass,
+# Dispatch — run_fast inline; the bare command then continues into the Full pass,
 # and run_slow does the downloads/installs.
+#
+# Wrapped in main() and invoked only on the very last line. Under `bash <(curl …)`
+# the script is read from the stream as it runs, so bash must parse this whole
+# function (through its closing brace) before it can call it: a truncated download
+# fails to parse and runs nothing that touches the system. Everything above main is
+# read-only detection, so it's safe even if a partial read aborts before main. Keep
+# the call bare (`main "$@"`) — invoking it in a conditional would disable `set -e`
+# inside main.
 # -----------------------------------------------------------------------------
 
-# --dry-run just prints the checklist, then stops.
-if $DRY_RUN; then
+main() {
+  # --dry-run just prints the checklist, then stops.
+  if $DRY_RUN; then
+    checklist
+    exit 0
+  fi
+
+  if $RUN_FAST; then run_fast; fi
+
+  if $AUTO; then
+    # Fast pass finished. Prompt, then continue into the Full pass in this same
+    # process — flip the mode flags so run_slow and the summary below behave as a
+    # full run. The single post-install summary at the end covers this Fast pass too.
+    exec 3<>/dev/tty
+    printf '%s' "  Fast loading is complete. Press enter to continue on FULL mode " >&3
+    read -r _ <&3 || true
+    exec 3>&-
+    FAST=false
+    FULL=true
+    RUN_SLOW=true
+  fi
+
+  if $RUN_SLOW; then run_slow; fi
+
+  # Summary
   checklist
-  exit 0
-fi
+  echo "  🛼  You're ready to roll!"
+  echo ""
+  echo "  ⚠️  Please restart the computer for all changes to take effect"
+  echo ""
+}
 
-if $RUN_FAST; then run_fast; fi
-
-if $AUTO; then
-  # Fast pass finished. Only now save the script to a temp file — so nothing is left
-  # on disk if the user stops here — run the Full pass from it as a child, then delete
-  # it (the EXIT trap also clears it on an early failure). The Full pass prints the
-  # post-install summary at the end (its live state covers what this Fast pass just
-  # did too), so we don't print one here.
-  exec 3<>/dev/tty
-  printf '%s' "  Fast loading is complete. Press enter to continue on FULL mode " >&3
-  read -r _ <&3 || true
-  exec 3>&-
-  TMP="$(mktemp -t load-mac)"
-  trap 'rm -f "$TMP"' EXIT
-  curl -fsSL "$SELF_URL" -o "$TMP"
-  export LOAD_FROM_FAST=1
-  bash "$TMP" --full && code=0 || code=$?
-  exit $code
-fi
-
-if $RUN_SLOW; then run_slow; fi
-
-# -----------------------------------------------------------------------------
-# Summary
-# -----------------------------------------------------------------------------
-
-checklist
-echo "  🛼  You're ready to roll!"
-echo ""
-echo "  ⚠️  Please restart the computer for all changes to take effect"
-echo ""
+main "$@"

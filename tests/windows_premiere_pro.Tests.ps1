@@ -110,3 +110,26 @@ Describe "Get-WorkspaceName (Premiere <Version>)" -ForEach $PremiereVersions {
         Get-WorkspaceName $ws | Should -Be 'LGG - Single monitor'
     }
 }
+
+# Set-PrefNode is the engine under Set-PremierePro. Its "no edit = no corruption"
+# contract (a missing node must leave the file byte-for-byte untouched) is the
+# safety guarantee the rest of the prefs handling relies on.
+Describe "Set-PrefNode" {
+    BeforeEach {
+        $script:prefs = Join-Path $TestDrive "node-prefs"
+        # Write without a BOM, matching what Premiere actually authors.
+        [System.IO.File]::WriteAllText(
+            $prefs, "<root><x>old</x></root>", (New-Object System.Text.UTF8Encoding $false))
+    }
+
+    It "replaces a present node's value and reports success" {
+        Set-PrefNode $prefs "x" "new" | Should -BeTrue
+        Get-Content $prefs -Raw | Should -Match '<x>new</x>'
+    }
+
+    It "returns false and leaves the file byte-for-byte untouched when the node is absent" {
+        $before = (Get-FileHash $prefs -Algorithm SHA256).Hash
+        Set-PrefNode $prefs "missing" "new" | Should -BeFalse
+        (Get-FileHash $prefs -Algorithm SHA256).Hash | Should -Be $before
+    }
+}
