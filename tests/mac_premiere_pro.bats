@@ -81,15 +81,16 @@ timeline_nodes() {
 }
 
 @test "timeline nodes from the script loop are enabled" {
-  local nodes; nodes="$(timeline_nodes)"
-  [ -n "$nodes" ]   # guard: parsing must find at least one node
+  local nodes
+  nodes="$(timeline_nodes)"
+  [ -n "$nodes" ] # guard: parsing must find at least one node
   for v in "${PREMIERE_VERSIONS[@]}"; do
     copy_prefs "$v"
     customise_premiere_pro "$PREFS" "x.kys" "WS" "$v"
     run cat "$PREFS"
     while IFS= read -r node; do
       assert_output --partial "<$node>true</$node>"
-    done <<< "$nodes"
+    done <<<"$nodes"
   done
 }
 
@@ -107,7 +108,7 @@ timeline_nodes() {
     copy_prefs "$v"
     customise_premiere_pro "$PREFS" "x.kys" "WS" "$v"
     run head -c 3 "$PREFS"
-    assert_output '<?x'   # would be the UTF-8 BOM bytes if perl had added one
+    assert_output '<?x' # would be the UTF-8 BOM bytes if perl had added one
   done
 }
 
@@ -135,8 +136,8 @@ timeline_nodes() {
     run xmllint --noout "$PREFS"
     assert_success
     run cat "$PREFS"
-    assert_output --partial '<BE.Prefs.AutoSave.Interval>5</BE.Prefs.AutoSave.Interval>'                       # others still applied
-    assert_output --partial '<TL.PREFLinkedSelectionStateRENAMED>false</TL.PREFLinkedSelectionStateRENAMED>'   # renamed node untouched
+    assert_output --partial '<BE.Prefs.AutoSave.Interval>5</BE.Prefs.AutoSave.Interval>'                     # others still applied
+    assert_output --partial '<TL.PREFLinkedSelectionStateRENAMED>false</TL.PREFLinkedSelectionStateRENAMED>' # renamed node untouched
   done
 }
 
@@ -148,18 +149,24 @@ timeline_nodes() {
 }
 
 @test "resolve_mode parses flags" {
-  run resolve_mode --fast;           assert_output 'fast'
-  run resolve_mode --full;           assert_output 'full'
-  run resolve_mode --dry-run;        assert_output 'dryrun'
-  run resolve_mode;                  assert_output ''
-  run resolve_mode --full --dry-run; assert_output 'full dryrun'
-  run resolve_mode foo;              assert_output ''
+  run resolve_mode --fast
+  assert_output 'fast'
+  run resolve_mode --full
+  assert_output 'full'
+  run resolve_mode --dry-run
+  assert_output 'dryrun'
+  run resolve_mode
+  assert_output ''
+  run resolve_mode --full --dry-run
+  assert_output 'full dryrun'
+  run resolve_mode foo
+  assert_output ''
 }
 
 @test "premiere_set_media_cache sets FolderPath, preserves DatabasePath" {
   D="test.load.$$.mediacache"
   defaults write "$D" "Media Cache" -dict DatabasePath "/orig/db/" FolderPath "/orig/folder/"
-  premiere_set_media_cache "$D" "/Volumes/SCRATCH_X/Cache"   # no trailing slash on input
+  premiere_set_media_cache "$D" "/Volumes/SCRATCH_X/Cache" # no trailing slash on input
   run defaults read "$D" "Media Cache"
   assert_output --partial 'FolderPath = "/Volumes/SCRATCH_X/Cache/"'
   assert_output --partial 'DatabasePath = "/orig/db/"'
