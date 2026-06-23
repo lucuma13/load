@@ -174,6 +174,42 @@ LWin & Tab::AltTab
     ; 4. Execute Terminal
     Run(terminal ' -d "' targetDir '"')
 }
+
+
+; -----------------------------------------------------------------------------
+; Global macOS mappings Shift+letter with CaspLock (keep typing uppercase)
+; -----------------------------------------------------------------------------
+
+#HotIf GetKeyState("CapsLock", "T")
++a::SendText "A"
++b::SendText "B"
++c::SendText "C"
++d::SendText "D"
++e::SendText "E"
++f::SendText "F"
++g::SendText "G"
++h::SendText "H"
++i::SendText "I"
++j::SendText "J"
++k::SendText "K"
++l::SendText "L"
++m::SendText "M"
++n::SendText "N"
++o::SendText "O"
++p::SendText "P"
++q::SendText "Q"
++r::SendText "R"
++s::SendText "S"
++t::SendText "T"
++u::SendText "U"
++v::SendText "V"
++w::SendText "W"
++x::SendText "X"
++y::SendText "Y"
++z::SendText "Z"
+#HotIf
+
+
 ; -----------------------------------------------------------------------------
 ; Global macOS mappings for special chars
 ; -----------------------------------------------------------------------------
@@ -393,6 +429,35 @@ TryAccent(key) {
 #HotIf
 
 ; -----------------------------------------------------------------------------
+; App-specific - Windows Terminal
+; -----------------------------------------------------------------------------
+
+#HotIf WinActive("ahk_exe WindowsTerminal.exe")
+
+#t::Send "^+t"  ; New tab
+#w::Send "^+w"  ; Close tab
+
+; Switch to tab N
+#1::Send "^!1"
+#2::Send "^!2"
+#3::Send "^!3"
+#4::Send "^!4"
+#5::Send "^!5"
+#6::Send "^!6"
+#7::Send "^!7"
+#8::Send "^!8"
+#9::Send "^!9"
+
+; Option+Enter inserts a newline instead of submitting
+!Enter:: {
+    Send "{Alt up}"
+    SendText "\"
+    Send "{Enter}"
+}
+
+#HotIf
+
+; -----------------------------------------------------------------------------
 ;  App-specific - File Explorer/Finder
 ; -----------------------------------------------------------------------------
 
@@ -426,6 +491,9 @@ TryAccent(key) {
 {
     Run "control.exe folders"
 }
+
+; Connect to Server (Map Network Drive dialog)
+#k::Run 'rundll32.exe shell32.dll,SHHelpShortcuts_RunDLL Connect'
 
 
 #+.:: { ; Toggle hidden files
@@ -466,6 +534,58 @@ TryAccent(key) {
 ;    Sleep 100   ; Add if running into timing issues
     Send "^v"
 }
+
+; Paste copied files as a copy (effect 1) or a move (effect 2). Windows records
+; copy-vs-cut on the clipboard as a "Preferred DropEffect" DWORD that Explorer
+; reads on paste; rewriting it lets one Cmd+C become either at paste time
+; (macOS behaviour). EmptyClipboard would drop the file list, so the existing
+; CF_HDROP bytes are copied out and written back together with the new effect.
+PasteWithEffect(effect) {
+    static CF_HDROP := 15, GMEM_MOVEABLE := 0x2
+    cfDropEffect := DllCall("RegisterClipboardFormat", "Str", "Preferred DropEffect", "UInt")
+
+    ; No files on the clipboard (e.g. text in a rename box) - just paste normally.
+    if !DllCall("IsClipboardFormatAvailable", "UInt", CF_HDROP) {
+        Send "^v"
+        return
+    }
+    if !DllCall("OpenClipboard", "Ptr", 0)
+        return
+    try {
+        hDrop := DllCall("GetClipboardData", "UInt", CF_HDROP, "Ptr")
+        if !hDrop
+            return
+        size := DllCall("GlobalSize", "Ptr", hDrop, "UPtr")
+        src  := DllCall("GlobalLock", "Ptr", hDrop, "Ptr")
+        buf  := Buffer(size)
+        DllCall("RtlMoveMemory", "Ptr", buf, "Ptr", src, "UPtr", size)
+        DllCall("GlobalUnlock", "Ptr", hDrop)
+
+        DllCall("EmptyClipboard")
+
+        ; Re-add the file list (ownership of the new HGLOBAL passes to the system).
+        hMem := DllCall("GlobalAlloc", "UInt", GMEM_MOVEABLE, "UPtr", size, "Ptr")
+        dst  := DllCall("GlobalLock", "Ptr", hMem, "Ptr")
+        DllCall("RtlMoveMemory", "Ptr", dst, "Ptr", buf, "UPtr", size)
+        DllCall("GlobalUnlock", "Ptr", hMem)
+        DllCall("SetClipboardData", "UInt", CF_HDROP, "Ptr", hMem)
+
+        ; Set the preferred drop effect (1 = copy, 2 = move).
+        hEff := DllCall("GlobalAlloc", "UInt", GMEM_MOVEABLE, "UPtr", 4, "Ptr")
+        pEff := DllCall("GlobalLock", "Ptr", hEff, "Ptr")
+        NumPut("UInt", effect, pEff)
+        DllCall("GlobalUnlock", "Ptr", hEff)
+        DllCall("SetClipboardData", "UInt", cfDropEffect, "Ptr", hEff)
+    } finally {
+        DllCall("CloseClipboard")
+    }
+    Send "^v"
+}
+
+; macOS-style paste: choose copy vs move at paste time instead of at copy time.
+#v::PasteWithEffect(1)   ; Paste (a copy)
+#!v::PasteWithEffect(2)  ; Move Item Here
+
 
 #!c:: {
     A_Clipboard := ""
