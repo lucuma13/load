@@ -1,4 +1,6 @@
-.PHONY: check lint test
+.PHONY: all check lint test
+
+all: check lint test
 
 # Syntax-check the shell entrypoint.
 check:
@@ -10,4 +12,4 @@ lint:
 
 # Run the bats test suite (needs bats-core: `brew install bats-core`).
 test:
-    bats tests/
+	bats tests/
