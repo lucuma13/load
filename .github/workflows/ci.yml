@@ -50,7 +50,7 @@ jobs:
         run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
       - run: npm ci
       - name: Syntax check
-        run: make check
+        run: bash -n src/load-mac.sh
       - name: Lint (ShellCheck)
         uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # 2.0.0
         with:
