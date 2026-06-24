@@ -10,13 +10,18 @@ Copyright (c) 2026 Luis Gomez Gutierrez
 & ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing -Uri "https://raw.githubusercontent.com/lucuma13/load/main/src/load-win.ps1").Content))
 
 .EXAMPLE
-# Alternatively download, verify and run. Flags: --fast/--full/--dry-run.
+# Alternative for Constrained Language Mode (download and run, gracefully downgrade under $CLM). Flags: --fast/--full/--dry-run.
 $f="$env:TEMP\load-win.ps1"; Invoke-WebRequest -Uri "https://raw.githubusercontent.com/lucuma13/load/main/src/load-win.ps1" -UseBasicParsing -OutFile $f -ErrorAction Stop; if(-not ((Get-Content $f -Raw).TrimEnd().EndsWith('# === END load-win.ps1 ==='))){throw "download incomplete - try again"}; powershell -ExecutionPolicy Bypass -File $f
 #>
 
 $ErrorActionPreference = "Continue"
 
 Set-StrictMode -Version Latest
+
+# Constrained Language Mode (enforced by WDAC/AppLocker) blocks Add-Type, P/Invoke,
+# crypto and most .NET method calls. Steps that need those degrade to a clean
+# "skipped (CLM)".
+$CLM = $ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage'
 
 $WorkDir = "$HOME\Downloads\load-win"
 New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
@@ -39,11 +44,28 @@ function Find-AhkExe {
     return $exe
 }
 
+# Find-UvExe - locate the uv executable, or return $null. We invoke uv by full path so
+# the uv-tool installs don't depend on the session PATH having refreshed after winget
+# installed it - which is unreliable under CLM, where %vars% in the registry PATH can't
+# be expanded. Checks PATH first, then winget's usual install/shim locations.
+function Find-UvExe {
+    $exe = Get-Command uv.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
+    if (-not $exe) {
+        $exe = Get-ChildItem `
+            "$env:LOCALAPPDATA\Microsoft\WinGet\Links\uv.exe", `
+            "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\astral-sh.uv*\uv.exe", `
+            "$env:ProgramFiles\WinGet\Links\uv.exe", `
+            "$env:USERPROFILE\.local\bin\uv.exe" `
+            -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
+    }
+    return $exe
+}
+
 # Get-WorkspaceName <ws_file> - return the workspace display name from the XML file,
 # stored under the UserName key.
 function Get-WorkspaceName {
     param($wsFile)
-    $content = [System.IO.File]::ReadAllText($wsFile)
+    $content = Get-Content -LiteralPath $wsFile -Raw
     if ($content -match '<key>UserName</key>\s*<ustring>(.*?)</ustring>') { return $Matches[1] }
     return ""
 }
@@ -167,6 +189,9 @@ function Set-FileAssociation {
 
 # winget package lists. Kept above the guard so the test suite can source them and
 # confirm every id still resolves on winget (catches renames/delisting/typos).
+# uv is singled out: it installs per-user (its tools live in the user's home), so it's
+# kept out of the elevated machine-wide batch and installed in the non-elevated process.
+$UV_PKG = "astral-sh.uv"
 $CORE_PKGS = @(
     "astral-sh.uv",
     "MediaArea.MediaInfo",
@@ -286,9 +311,12 @@ function Test-WingetInstalled($id) {
     return $LASTEXITCODE -eq 0 -and ($result -match [regex]::Escape($id))
 }
 
-# Invoke-WingetApply <id> - install the package, or upgrade it in place when already present.
-# winget's native output is shown only for installs/upgrades and errors.
-function Invoke-WingetApply($id) {
+# Invoke-WingetApply <id> [scope] - install the package, or upgrade it in place when
+# already present. <scope> ("user"/"machine") is passed only on a fresh install; an
+# upgrade keeps the existing install's scope. winget's native output is shown only for
+# installs/upgrades and errors. Used for the non-elevated, per-user installs (uv); the
+# elevated machine-wide batch builds its own winget command lines (see Invoke-ElevatedInstall).
+function Invoke-WingetApply($id, $scope) {
     if (Test-WingetInstalled $id) {
         # Redirecting a native command's stderr under $ErrorActionPreference='Stop'
         # wraps each line in a NativeCommandError that aborts the script, so soften
@@ -301,13 +329,15 @@ function Invoke-WingetApply($id) {
         if ($out -notmatch 'No available upgrade|No installed package') { Write-Host $out.TrimEnd() }
     }
     else {
-        winget install --id $id --exact --silent --accept-package-agreements --accept-source-agreements
+        $scopeArg = if ($scope) { @("--scope", $scope) } else { @() }
+        winget install --id $id --exact --silent @scopeArg --accept-package-agreements --accept-source-agreements
     }
 }
 
 function Test-UvInstalled($pkg) {
-    if (-not (Get-Command uv -ErrorAction SilentlyContinue)) { return $false }
-    return [bool]((uv tool list 2>$null) -match "^$pkg")
+    $uv = Find-UvExe
+    if (-not $uv) { return $false }
+    return [bool]((& $uv tool list 2>$null) -match "^$pkg")
 }
 
 # Test-AppInstalled <pattern> - true if any Windows uninstall entry's DisplayName
@@ -336,7 +366,7 @@ function Test-PremiereApplied {
     foreach ($profileDir in Get-ChildItem "$HOME\Documents\Adobe\Premiere Pro\*\Profile-*" -Directory -ErrorAction SilentlyContinue) {
         $prefs = Join-Path $profileDir.FullName "Adobe Premiere Pro Prefs"
         if (-not (Test-Path $prefs)) { continue }
-        $content = [System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($prefs))
+        $content = Get-Content -LiteralPath $prefs -Raw
         if ($content -match "<FE\.Prefs\.Shortcuts\.Filename>$([regex]::Escape($KYS_FILE))</FE\.Prefs\.Shortcuts\.Filename>") { return $true }
     }
     return $false
@@ -367,10 +397,15 @@ function Show-Checklist {
 
     Write-Host ""
 
+    # Constrained Language Mode disables the .NET-backed steps below; flag it once up top
+    # so the per-line "skipped" reasons make sense.
+    if ($CLM) { Write-Host "  [info] Constrained Language Mode active - default apps and Premiere prefs can't be scripted; keyboard/Explorer settings persist but apply at next sign-in." }
+
     # Premiere Pro - shortcuts, workspace, preferences and LUTs are the editing setup, so they
     # all require Premiere installed. (When Premiere is open the files are dropped but not activated.)
     if (-not $PREMIERE_OK) { Skipped  "Premiere Pro (shortcuts, workspace, preferences, LUTs) - Premiere Pro not installed" }
     elseif ($premiereRunning) { Skipped  "Premiere Pro (shortcuts, workspace, preferences, LUTs) - Premiere Pro is open" }
+    elseif ($CLM) { Skipped  "Premiere Pro (shortcuts, workspace, preferences, LUTs) - Not allowed under Constrained Language Mode" }
     elseif ((Test-PremiereApplied) -and (Test-LutPresent)) { Done "Premiere Pro (shortcuts, workspace, preferences, LUTs)" }
     else { WouldRun "Premiere Pro (shortcuts, workspace, preferences, LUTs)" }
 
@@ -390,7 +425,8 @@ function Show-Checklist {
     $installedApps = @($DEFAULT_APPS | Where-Object { Test-Path $_.Exe })
     $anyInstalled = $installedApps.Count -gt 0
     $allDefault = -not ($installedApps | Where-Object { -not (Test-DefaultOwned $_) })
-    if (-not $anyInstalled -and $FAST) { Skipped  "Make default: $names - one or more not installed" }
+    if ($CLM) { Skipped  "Make default: $names - Not allowed under Constrained Language Mode" }
+    elseif (-not $anyInstalled -and $FAST) { Skipped  "Make default: $names - one or more not installed" }
     elseif ($anyInstalled -and $allDefault) { Done     "Make default: $names" }
     else { WouldRun "Make default: $names" }
 
@@ -442,6 +478,9 @@ function Set-DefaultApp {
     # Point Explorer's per-extension UserChoice at each $DEFAULT_APPS target's ProgIds.
     # Each app is gated on being installed and re-checks the current default, so it's a
     # no-op once owned and safe to call from both phases.
+    # The UserChoice tamper-hash needs MD5 + a registry-ACL edit, neither of which is
+    # available under CLM - skip the whole step there (the checklist reports it).
+    if ($CLM) { return }
     foreach ($app in $DEFAULT_APPS) {
         if (-not (Test-Path $app.Exe)) { continue }
         if (Test-DefaultOwned $app) { continue }
@@ -484,6 +523,12 @@ function Invoke-FastPass {
             if ($PREMIERE_RUNNING) {
                 Write-Host "  [warn] Premiere Pro is running - files dropped but not activated"
             }
+            elseif ($CLM) {
+                # The prefs write is a byte-level .NET edit (the only no-BOM writer on
+                # PowerShell 5.1); it can't run under CLM. The shortcut/workspace files
+                # are still dropped above - Premiere registers the workspace on launch.
+                Write-Host "  [warn] Constrained Language Mode - shortcut/workspace files dropped but prefs not modified"
+            }
             elseif (Test-Path $prefs) {
                 # $profileDir.Parent.Name is the version folder (e.g. "25.0"), so each
                 # profile's warning is tagged with the Premiere version it came from.
@@ -519,18 +564,22 @@ function Invoke-FastPass {
         Set-ItemProperty -Path "HKCU:\Control Panel\Keyboard" -Name "KeyboardSpeed" -Value 31
         Set-ItemProperty -Path "HKCU:\Control Panel\Keyboard" -Name "KeyboardDelay" -Value 0
 
-        # Apply to the active session immediately (no logoff needed)
-        if (-not ([System.Management.Automation.PSTypeName]'KeyboardConfig').Type) {
-            Add-Type -TypeDefinition @"
+        # Apply to the active session immediately (no logoff needed). Needs Add-Type +
+        # P/Invoke, both blocked under CLM - the registry writes above still persist, so
+        # under CLM the change just takes effect at next sign-in instead of instantly.
+        if (-not $CLM) {
+            if (-not ([System.Management.Automation.PSTypeName]'KeyboardConfig').Type) {
+                Add-Type -TypeDefinition @"
 using System.Runtime.InteropServices;
 public class KeyboardConfig {
     [DllImport("user32.dll", SetLastError = true)]
     public static extern bool SystemParametersInfo(uint uiAction, uint uiParam, uint pvParam, uint fWinIni);
 }
 "@
+            }
+            [KeyboardConfig]::SystemParametersInfo(0x0017, 0, 0, 0)  | Out-Null  # SPI_SETKEYBOARDDELAY
+            [KeyboardConfig]::SystemParametersInfo(0x000B, 31, 0, 0) | Out-Null  # SPI_SETKEYBOARDSPEED
         }
-        [KeyboardConfig]::SystemParametersInfo(0x0017, 0, 0, 0)  | Out-Null  # SPI_SETKEYBOARDDELAY
-        [KeyboardConfig]::SystemParametersInfo(0x000B, 31, 0, 0) | Out-Null  # SPI_SETKEYBOARDSPEED
     }
 
     # Disable the input-language / keyboard-layout switch hotkeys (Alt+Shift,
@@ -549,8 +598,11 @@ public class KeyboardConfig {
     Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "HideFileExt" -Value 0
 
     # Tell Explorer to re-read its settings so the change applies without a restart.
-    if (-not ([System.Management.Automation.PSTypeName]'Win32Shell').Type) {
-        Add-Type -TypeDefinition @"
+    # Add-Type/P-Invoke is blocked under CLM; the HideFileExt write above persists, so
+    # under CLM the change just applies on the next Explorer restart instead of now.
+    if (-not $CLM) {
+        if (-not ([System.Management.Automation.PSTypeName]'Win32Shell').Type) {
+            Add-Type -TypeDefinition @"
 using System;
 using System.Runtime.InteropServices;
 public class Win32Shell {
@@ -558,71 +610,72 @@ public class Win32Shell {
     public static extern void SHChangeNotify(int eventId, uint flags, IntPtr item1, IntPtr item2);
 }
 "@
+        }
+        [Win32Shell]::SHChangeNotify(0x08000000, 0, [IntPtr]::Zero, [IntPtr]::Zero)  # SHCNE_ASSOCCHANGED
     }
-    [Win32Shell]::SHChangeNotify(0x08000000, 0, [IntPtr]::Zero, [IntPtr]::Zero)  # SHCNE_ASSOCCHANGED
 
     # Default apps - config that needs the app present (see Set-DefaultApp)
     Set-DefaultApp
 }
 
-function Invoke-SlowPass {
-    # Managed packages
-    foreach ($pkg in $CORE_PKGS) { Invoke-WingetApply $pkg }
-    # Refresh PATH so newly installed tools (uv, etc.) are available in this session
-    $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
-    [System.Environment]::GetEnvironmentVariable("Path", "User")
-    # --quiet silences uv's resolve/install progress on success but still prints
-    # warnings and errors, so a failed install is surfaced without any capture dance.
-    foreach ($pkg in $CORE_UV) { uv tool install $pkg --upgrade --quiet }
-    # Add uv's tool bin dir to PATH permanently and refresh for this session.
-    uv tool update-shell --quiet
-    $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
-    [System.Environment]::GetEnvironmentVariable("Path", "User")
-
-    # Full-only managed packages
-    if ($FULL) {
-        foreach ($pkg in $FULL_PKGS) { Invoke-WingetApply $pkg }
-        # Refresh PATH so newly installed tools (AutoHotkey, etc.) are available in this session
+# Update-SessionPath - pull the freshly-installed tools' PATH entries into this
+# session. Normally rebuilds $env:Path from the Machine + User stores via .NET (which
+# expands %vars%). Under CLM that .NET call is blocked, so fall back to reading the
+# registry with cmdlets and *appending* to the live $env:Path (REG_EXPAND_SZ entries
+# come back unexpanded, so we keep the current PATH rather than replacing it).
+function Update-SessionPath {
+    if (-not $CLM) {
         $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
         [System.Environment]::GetEnvironmentVariable("Path", "User")
+        return
     }
-
-    # Tell already-running apps to re-read the environment so the new PATH is picked
-    # up without a logoff (this session is already refreshed above).
-    if (-not ([System.Management.Automation.PSTypeName]'Win32Env').Type) {
-        Add-Type -TypeDefinition @"
-using System;
-using System.Runtime.InteropServices;
-public class Win32Env {
-    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
-    public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, IntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out IntPtr lpdwResult);
+    $machine = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" -Name Path -ErrorAction SilentlyContinue).Path
+    $user = (Get-ItemProperty "HKCU:\Environment" -Name Path -ErrorAction SilentlyContinue).Path
+    $env:Path = (@($env:Path, $machine, $user) | Where-Object { $_ }) -join ";"
 }
-"@
+
+# Invoke-ElevatedInstall - run every install that needs admin rights in ONE elevated
+# process, so a standard user is asked for the admin password just once. The
+# install/upgrade decisions and the plugin downloads happen here (non-elevated); only
+# the installers run elevated. winget runs with --scope machine so packages install
+# system-wide and are available to the standard user; uv is excluded (it must stay
+# per-user - see Invoke-SlowPass). Does nothing, and prompts for nothing, when there's
+# nothing left to install.
+#
+# The batch is handed to an elevated cmd.exe via its command line: AppLocker's
+# script-file rules and AV script heuristics don't apply, and cmd works under CLM too.
+function Invoke-ElevatedInstall {
+    $cmds = @()
+
+    # winget: everything except uv, installed machine-wide. An upgrade keeps the
+    # existing install's scope, so --scope is only set on a fresh install. winget waits
+    # for its own installer, so no "start /wait" wrapper is needed here.
+    if ($WINGET_OK) {
+        $ids = @($CORE_PKGS | Where-Object { $_ -ne $UV_PKG })
+        if ($FULL) { $ids += $FULL_PKGS }
+        foreach ($id in $ids) {
+            if (Test-WingetInstalled $id) {
+                $cmds += "winget upgrade --id $id --exact --silent --accept-package-agreements --accept-source-agreements"
+            }
+            else {
+                $cmds += "winget install --id $id --exact --silent --scope machine --accept-package-agreements --accept-source-agreements"
+            }
+        }
     }
-    $HWND_BROADCAST = [IntPtr]0xffff
-    [IntPtr]$res = [IntPtr]::Zero
-    [Win32Env]::SendMessageTimeout($HWND_BROADCAST, 0x001A, [IntPtr]::Zero, "Environment", 2, 5000, [ref]$res) | Out-Null  # WM_SETTINGCHANGE
 
-    # Default apps - now that VLC/Acrobat are installed (covers a fresh machine)
-    Set-DefaultApp
-
-    # AHK macros - AutoHotkey was installed above on a Full run (or already present)
-    Install-AhkScript
-
-    # Non-winget packages (like Premiere Pro plugins); the plugins themselves are then added
-    # from within it on first launch.
+    # Premiere plugins - download now (no admin needed), install in the elevated batch.
+    # msiexec and the Flicker Free GUI installer return immediately, so wrap them in
+    # "start /wait" (the leading "" is the required window-title placeholder) so the
+    # batch waits for each to finish.
+    $cleanup = @()
     if ($PREMIERE_OK) {
-        # Skip the download + (elevated) MSI when the Product Manager is already installed.
         if (-not (Test-MisterHorseInstalled)) {
             $pmPath = "$WorkDir\MisterHorseProductManager.msi"
             curl.exe -fsSL -o $pmPath "https://misterhorse.com/downloads/product-manager/win"
-            $pm = Start-Process msiexec.exe -ArgumentList "/i `"$pmPath`" /qn" -Verb RunAs -Wait -PassThru
-            # Clean up the installer once it finished successfully (exit 0).
-            if ($pm.ExitCode -eq 0) { Remove-Item $pmPath -Force -ErrorAction SilentlyContinue }
+            $cmds += "start `"`" /wait msiexec /i `"$pmPath`" /qn"
+            $cleanup += $pmPath
         }
-
-        # Flicker Free 2.0. The download is a zip wrapping the installer .exe; we extract it and
-        # run the installer.
+        # Flicker Free 2.0 - the download is a zip wrapping the installer .exe.
         if (-not (Test-FlickerFreeInstalled)) {
             $ffZip = "$WorkDir\flickerfree_229_AE.zip"
             $ffDir = "$WorkDir\flickerfree_229_AE"
@@ -630,15 +683,79 @@ public class Win32Env {
             Expand-Archive -Path $ffZip -DestinationPath $ffDir -Force
             $ffExe = Get-ChildItem $ffDir -Filter *.exe | Select-Object -First 1
             if ($ffExe) {
-                $ff = Start-Process $ffExe.FullName -Verb RunAs -Wait -PassThru
-                # Clean up the zip and extracted installer once it finished successfully.
-                if ($ff.ExitCode -eq 0) {
-                    Remove-Item $ffZip -Force -ErrorAction SilentlyContinue
-                    Remove-Item $ffDir -Recurse -Force -ErrorAction SilentlyContinue
-                }
+                $cmds += "start `"`" /wait `"$($ffExe.FullName)`""
+                $cleanup += $ffZip
+                $cleanup += $ffDir
             }
         }
     }
+
+    if ($cmds.Count -eq 0) { return }  # nothing needs admin - no prompt
+
+    # Join with " & " (run each regardless of the previous one's exit code) and hand it
+    # to one elevated cmd.exe. "/s /c" strips just the outermost quotes, leaving the
+    # inner quotes around installer paths intact. -Wait so the config that follows sees
+    # the installs finished; the elevated console shows install progress.
+    $chain = "/s /c `"" + ($cmds -join " & ") + "`""
+    try {
+        Start-Process cmd.exe -ArgumentList $chain -Verb RunAs -Wait
+    }
+    catch {
+        Write-Host "  [warn] Elevated install step did not run (admin prompt cancelled?): $_"
+    }
+    foreach ($p in $cleanup) { Remove-Item -LiteralPath $p -Recurse -Force -ErrorAction SilentlyContinue }
+}
+
+function Invoke-SlowPass {
+    # All installs that need admin rights (machine-wide winget packages + the Premiere
+    # plugins) run in ONE elevated batch. Everything below stays in this non-elevated
+    # process so it lands in the real user's profile.
+    Invoke-ElevatedInstall
+
+    # uv - installed per-user (no elevation, --scope user) so `uv tool install` lands in
+    # THIS user's home, not the admin's. Invoked by full path (see Find-UvExe) so it's
+    # found even when the session PATH didn't pick up winget's change (common under CLM).
+    if ($WINGET_OK) { Invoke-WingetApply $UV_PKG "user" }
+    Update-SessionPath
+    $uv = Find-UvExe
+    if ($uv) {
+        # --quiet silences uv's resolve/install progress on success but still prints
+        # warnings and errors, so a failed install is surfaced without any capture dance.
+        foreach ($pkg in $CORE_UV) { & $uv tool install $pkg --upgrade --quiet }
+        # Add uv's tool bin dir to PATH permanently and refresh for this session.
+        & $uv tool update-shell --quiet
+        Update-SessionPath
+    }
+    else {
+        Write-Host "  [warn] uv not found after install - reopen the terminal and re-run with --full to finish the uv tools ($($CORE_UV -join ', '))"
+    }
+
+    # Tell already-running apps to re-read the environment so the new PATH is picked
+    # up without a logoff (this session is already refreshed above). Needs Add-Type +
+    # P/Invoke, both blocked under CLM - skip the broadcast there (other apps pick up
+    # the persisted PATH when they next start; this session was already refreshed).
+    if (-not $CLM) {
+        if (-not ([System.Management.Automation.PSTypeName]'Win32Env').Type) {
+            Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public class Win32Env {
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+    public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, IntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out IntPtr lpdwResult);
+}
+"@
+        }
+        $HWND_BROADCAST = [IntPtr]0xffff
+        [IntPtr]$res = [IntPtr]::Zero
+        [Win32Env]::SendMessageTimeout($HWND_BROADCAST, 0x001A, [IntPtr]::Zero, "Environment", 2, 5000, [ref]$res) | Out-Null  # WM_SETTINGCHANGE
+    }
+
+    # Default apps - now that VLC/Acrobat are installed (covers a fresh machine)
+    Set-DefaultApp
+
+    # AHK macros - AutoHotkey was installed above on a Full run (or already present).
+    # Launched non-elevated from this process so the macros work on non-elevated apps.
+    Install-AhkScript
 }
 
 # -----------------------------------------------------------------------------
