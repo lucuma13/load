@@ -8,7 +8,7 @@
     "lint": "shellcheck src/load-mac.sh",
     "_comment": "pin bats to system bash 3.2 to prevent deadlocks on the bats-preprocess here-string.",
     "test": "PATH=/bin:$PATH bats tests/",
-    "test:ci": "PATH=/bin:$PATH bats --filter-tags '!live' tests/"
+    "test:ci": "bats --filter-tags '!live' tests/"
   },
   "devDependencies": {
     "bats": "^1.13.0",
