@@ -732,6 +732,7 @@ main() {
     # process — flip the mode flags so run_slow and the summary below behave as a
     # full run. The single post-install summary at the end covers this Fast pass too.
     exec 3<>/dev/tty
+    printf ""
     printf '%s' "  Fast loading is complete. Press enter to continue on FULL mode " >&3
     read -r _ <&3 || true
     exec 3>&-
