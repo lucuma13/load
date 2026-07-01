@@ -597,6 +597,9 @@ public class KeyboardConfig {
     # Windows counterpart of macOS's AppleShowAllExtensions.
     Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "HideFileExt" -Value 0
 
+    # Show the status bar at the bottom of Explorer windows (ShowStatusBar = 1).
+    Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "ShowStatusBar" -Value 1
+
     # Tell Explorer to re-read its settings so the change applies without a restart.
     # Add-Type/P-Invoke is blocked under CLM; the HideFileExt write above persists, so
     # under CLM the change just applies on the next Explorer restart instead of now.

@@ -733,7 +733,9 @@ main() {
     # full run. The single post-install summary at the end covers this Fast pass too.
     exec 3<>/dev/tty
     printf ""
-    printf '%s' "  Fast loading is complete. Press enter to continue on FULL mode " >&3
+    printf '%s' "
+
+  ▶️ Fast loading is complete. Press enter to continue on FULL mode " >&3
     read -r _ <&3 || true
     exec 3>&-
     FAST=false
