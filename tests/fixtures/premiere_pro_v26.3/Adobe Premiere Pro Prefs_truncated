@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<PremiereData Version="3">
+	<Preferences ObjectID="1" ClassID="f06902ec-e637-4744-a586-c26202143e36" Version="30">
+		<Properties Version="1">
+			<FE.Prefs.Shortcuts.Filename>Adobe Premiere Pro Defaults.kys</FE.Prefs.Shortcuts.Filename>
+			<FE.Application.LastWorkspaceName>Editing</FE.Application.LastWorkspaceName>
+			<BE.Prefs.AutoSave.DoSave>false</BE.Prefs.AutoSave.DoSave>
+			<BE.Prefs.AutoSave.Interval>177</BE.Prefs.AutoSave.Interval>
+			<TL.PREFLinkedSelectionState>false</TL.PREFLinkedSelectionState>
+			<be.Prefs.Timeline.Show.Video.Thumbnails>false</be.Prefs.Timeline.Show.Video.Thumbnails>
+			<be.Prefs.Timeline.Show.Video.Names>false</be.Prefs.Timeline.Show.Video.Names>
+			<be.Prefs.Timeline.Show.Audio.Waveforms>false</be.Prefs.Timeline.Show.Audio.Waveforms>
+			<be.Prefs.Timeline.Show.Audio.Names>false</be.Prefs.Timeline.Show.Audio.Names>
+			<be.Prefs.Timeline.Show.Proxy.Badges>false</be.Prefs.Timeline.Show.Proxy.Badges>
+			<TL.PREFShowFXBadges>false</TL.PREFShowFXBadges>
+			<TL.PREFShowThroughEditsState>false</TL.PREFShowThroughEditsState>
+			<MZ.SQShowDuplicateMarkers>false</MZ.SQShowDuplicateMarkers>
+			<BE.Prefs.LabelNames.0>Purple</BE.Prefs.LabelNames.0>
+			<BE.Prefs.LabelNames.1>Blue</BE.Prefs.LabelNames.1>
+			<BE.Prefs.LabelNames.2>Green</BE.Prefs.LabelNames.2>
+			<BE.Prefs.LabelNames.3>Pink</BE.Prefs.LabelNames.3>
+			<BE.Prefs.LabelNames.4>Dark Blue</BE.Prefs.LabelNames.4>
+			<BE.Prefs.LabelNames.5>Dark Green</BE.Prefs.LabelNames.5>
+			<BE.Prefs.LabelNames.6>Dark Pink</BE.Prefs.LabelNames.6>
+			<BE.Prefs.LabelNames.7>Orange</BE.Prefs.LabelNames.7>
+			<BE.Prefs.LabelNames.8>Dark Purple</BE.Prefs.LabelNames.8>
+			<BE.Prefs.LabelNames.9>Gray</BE.Prefs.LabelNames.9>
+			<BE.Prefs.LabelNames.10>Red</BE.Prefs.LabelNames.10>
+			<BE.Prefs.LabelNames.11>Dark Yellow</BE.Prefs.LabelNames.11>
+			<BE.Prefs.LabelNames.12>Dark Gray</BE.Prefs.LabelNames.12>
+			<BE.Prefs.LabelNames.13>Dark Red</BE.Prefs.LabelNames.13>
+			<BE.Prefs.LabelNames.14>Dark Orange</BE.Prefs.LabelNames.14>
+			<BE.Prefs.LabelNames.15>Yellow</BE.Prefs.LabelNames.15>
+			<BE.Prefs.LabelColors.0>13976019</BE.Prefs.LabelColors.0>
+			<BE.Prefs.LabelColors.1>15963712</BE.Prefs.LabelColors.1>
+			<BE.Prefs.LabelColors.2>2468621</BE.Prefs.LabelColors.2>
+			<BE.Prefs.LabelColors.3>11369724</BE.Prefs.LabelColors.3>
+			<BE.Prefs.LabelColors.4>10898944</BE.Prefs.LabelColors.4>
+			<BE.Prefs.LabelColors.5>1007360</BE.Prefs.LabelColors.5>
+			<BE.Prefs.LabelColors.6>7482321</BE.Prefs.LabelColors.6>
+			<BE.Prefs.LabelColors.7>1542649</BE.Prefs.LabelColors.7>
+			<BE.Prefs.LabelColors.8>9633938</BE.Prefs.LabelColors.8>
+			<BE.Prefs.LabelColors.9>11579568</BE.Prefs.LabelColors.9>
+			<BE.Prefs.LabelColors.10>3228654</BE.Prefs.LabelColors.10>
+			<BE.Prefs.LabelColors.11>37044</BE.Prefs.LabelColors.11>
+			<BE.Prefs.LabelColors.12>4934475</BE.Prefs.LabelColors.12>
+			<BE.Prefs.LabelColors.13>167</BE.Prefs.LabelColors.13>
+			<BE.Prefs.LabelColors.14>21178</BE.Prefs.LabelColors.14>
+			<BE.Prefs.LabelColors.15>317687</BE.Prefs.LabelColors.15>
+			<PPro.LabelColorPresets.RecentPreset>{"builtIn":true,"name":"Vibrant"}</PPro.LabelColorPresets.RecentPreset>
+		</Properties>
+	</Preferences>
+</PremiereData>
