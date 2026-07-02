@@ -579,15 +579,21 @@ plistlib.dump(p,open(path,'wb'))
   # override or adopt it.
   checking "core packages"
   quiet_run brew install --adopt $CORE_FORMULAE
-  local core_casks=""
+  local core_casks="" core_casks_preexisting=""
   for cask in $CORE_CASKS; do
     [ "$cask" = mediainfo ] && mediainfo_gui_external && continue
     core_casks="$core_casks $cask"
+    cask_installed "$cask" && core_casks_preexisting="$core_casks_preexisting $cask"
   done
-  # install --adopt brings in anything missing; upgrade --greedy then updates the
-  # already-installed casks.
+  # install --adopt brings in anything missing; upgrade --greedy then updates
+  # only the casks that were ALREADY installed before this run. A cask adopted
+  # moments ago above is already at the latest version, so greedy-checking it
+  # again is redundant work — and for a pkg-based cask (e.g.
+  # adobe-acrobat-reader) it's a second separate `brew` process, which
+  # re-authenticates sudo on every invocation and can prompt for the password
+  # a second time in a row for no actual gain.
   quiet_run brew install --cask --adopt $core_casks
-  quiet_run brew upgrade --cask --greedy $core_casks
+  [ -n "$core_casks_preexisting" ] && quiet_run brew upgrade --cask --greedy $core_casks_preexisting
   # --quiet drops uv's resolve/install progress on success but still prints errors.
   checking "uv tools"
   for pkg in $CORE_UV; do uv tool install "$pkg" --upgrade --quiet; done
@@ -675,8 +681,16 @@ PY
   # Full-only managed packages
   if $FULL; then
     checking "extra packages"
+    local full_casks_preexisting=""
+    for cask in $FULL_CASKS; do
+      cask_installed "$cask" && full_casks_preexisting="$full_casks_preexisting $cask"
+    done
+    # See the core-casks block above: skip the greedy upgrade for casks just
+    # adopted in the `install` call right above it — already at the latest
+    # version, and re-checking them is a second `brew` process that can
+    # re-prompt for sudo on pkg-based casks like adobe-acrobat-reader.
     quiet_run brew install --cask --adopt $FULL_CASKS
-    quiet_run brew upgrade --cask --greedy $FULL_CASKS
+    [ -n "$full_casks_preexisting" ] && quiet_run brew upgrade --cask --greedy $full_casks_preexisting
   fi
 
   # Cache sudo credentials right here — not at the top of this function — because
