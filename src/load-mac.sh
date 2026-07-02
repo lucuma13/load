@@ -547,16 +547,12 @@ plistlib.dump(p,open(path,'wb'))
     echo "  ⚠️  Finder 'Calculate all sizes' skipped — python3 not available"
   fi
 
-  # Cache sudo credentials (only the steps below need root) and keep them alive
-  sudo -v
-  while true; do
-    sudo -n true || true
-    sleep 60
-    kill -0 "$$" || exit
-  done 2>/dev/null &
-
   # Homebrew — install it, or refresh it (update + cleanup) when already present.
   if ! $BREW_OK; then
+    # Pre-authenticate so Homebrew's own installer (which needs sudo to set up
+    # its prefix) doesn't prompt separately — its own `have_sudo_access` check
+    # succeeds silently against an already-valid ticket.
+    sudo -v
     would_run "Installing Homebrew"
     echo | quiet_run /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
@@ -681,6 +677,22 @@ PY
     checking "extra packages"
     quiet_run brew install --cask --adopt $FULL_CASKS
     quiet_run brew upgrade --cask --greedy $FULL_CASKS
+  fi
+
+  # Cache sudo credentials right here — not at the top of this function — because
+  # `brew` resets any cached sudo timestamp on every single invocation as a
+  # deliberate security measure (see brew.sh: "Reset sudo timestamp to avoid
+  # running unauthorized sudo commands"), so authenticating before the Homebrew/uv
+  # work above would just get silently wiped before we ever needed it. Nothing
+  # below this point calls `brew` again, so one prompt here covers every
+  # privileged step below it (kept alive across slow downloads just in case).
+  if $PREMIERE_OK || ! $PVF_OK; then
+    sudo -v
+    while true; do
+      sudo -n true || true
+      sleep 60
+      kill -0 "$$" || exit
+    done 2>/dev/null &
   fi
 
   # Every installer below downloads into the work dir; create it once up front.
