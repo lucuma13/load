@@ -85,6 +85,22 @@ set_pref_node() {
   SPN_VAL="$3" perl -i -pe "s{(<\Q$node\E>).*?(</\Q$node\E>)}{\${1}\$ENV{SPN_VAL}\${2}}" "$prefs"
 }
 
+# force_pref_node <prefs> <node> <value> — like set_pref_node, but when the node is
+# absent it CREATES it inside the <Properties> block instead of skipping. Use only for
+# nodes whose Premiere default is wrong for us, so a fresh install (where Premiere
+# hasn't written the node yet) must still be overridden. Returns 1 without touching the
+# file only when the <Properties> block can't be found. Idempotent: once created, later
+# runs find the node and edit it in place.
+force_pref_node() {
+  local prefs="$1" node="$2"
+  grep -q "<$node>" "$prefs" && {
+    set_pref_node "$prefs" "$node" "$3"
+    return
+  }
+  grep -q "<Properties" "$prefs" || return 1
+  SPN_NODE="$node" SPN_VAL="$3" perl -i -pe 's{(<Properties\b[^>]*>)}{$1\n\t\t\t<$ENV{SPN_NODE}>$ENV{SPN_VAL}</$ENV{SPN_NODE}>}' "$prefs"
+}
+
 # customise_premiere_pro <prefs> <kys_file> <ws_name> <version> — point Premiere's prefs at
 # the keyboard set + workspace, apply the Classic label preset, enable auto-save
 # every 5 minutes, and turn on the timeline's Link Selection + Display Settings.
@@ -134,11 +150,26 @@ customise_premiere_pro() {
   #   be.Prefs.Timeline.Show.Audio.Names
   #   be.Prefs.Timeline.Show.Proxy.Badges
   #   TL.PREFShowFXBadges
+  # Link Selection already defaults to the value we want, so a missing node on a fresh
+  # install is fine and simply left untouched.
+  set_pref_node "$prefs" "TL.PREFLinkedSelectionState" "true" || missing+=("TL.PREFLinkedSelectionState")
+
+  # Show Through Edits (TL.PREFShowThroughEditsState) and Show Duplicate Frame Markers
+  # (MZ.SQShowDuplicateMarkers) do NOT default to the value we want, so a fresh install
+  # left untouched would keep them wrong. Force-write them — creating the node if
+  # Premiere hasn't persisted it yet — on the major versions whose behaviour we've
+  # verified: 24.x, 25.x and 26.x. When 27.x ships, test it before adding it to this
+  # whitelist. On any other version fall back to the in-place edit (skip + report if
+  # absent). $version is normally "24.0"/"26.3" etc; pull the leading major number.
+  local major=""
+  [[ "$version" =~ ([0-9]+)\. ]] && major="${BASH_REMATCH[1]}"
   for tl_node in \
-    TL.PREFLinkedSelectionState \
     TL.PREFShowThroughEditsState \
     MZ.SQShowDuplicateMarkers; do
-    set_pref_node "$prefs" "$tl_node" "true" || missing+=("$tl_node")
+    case "$major" in
+    24 | 25 | 26) force_pref_node "$prefs" "$tl_node" "true" || missing+=("$tl_node") ;;
+    *) set_pref_node "$prefs" "$tl_node" "true" || missing+=("$tl_node") ;;
+    esac
   done
 
   # A missing node leaves the file untouched for that node (never corrupted). It's
@@ -507,7 +538,7 @@ run_slow() {
   # a fresh Mac triggers the Xcode CLT dialog mid-run and aborts; we pop the
   # installer and wait for it to finish.
   if ! xcode-select -p &>/dev/null; then
-    echo "  🚀  Command Line Tools — installing (accept the dialog; this can take a few minutes)…"
+    echo "  Installing Command Line Tools… (Accept the dialog - this can take a few minutes)…"
     xcode-select --install &>/dev/null || true
     # The installer window opens behind the terminal, so nudge it to the front
     # while we wait so the user doesn't miss the dialog.
@@ -553,7 +584,7 @@ plistlib.dump(p,open(path,'wb'))
     # its prefix) doesn't prompt separately — its own `have_sudo_access` check
     # succeeds silently against an already-valid ticket.
     sudo -v
-    would_run "Installing Homebrew"
+    would_run "Installing Homebrew…"
     echo | quiet_run /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
     PREFIX="$(brew_prefix)"

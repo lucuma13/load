@@ -108,10 +108,44 @@ timeline_nodes() {
     copy_prefs "$v"
     customise_premiere_pro "$PREFS" "x.kys" "WS" "$v"
     run cat "$PREFS"
+    assert_output --partial '<TL.PREFLinkedSelectionState>true</TL.PREFLinkedSelectionState>'
     while IFS= read -r node; do
       assert_output --partial "<$node>true</$node>"
     done <<<"$nodes"
   done
+}
+
+# The force-written nodes are absent on a fresh install - they must be created but only on
+# the whitelisted versions.
+@test "force nodes are created when absent on a whitelisted version" {
+  for v in "${PREMIERE_VERSIONS[@]}"; do
+    copy_prefs "$v"
+    # Simulate a fresh install where Premiere has not written these nodes yet.
+    sed -i.bak -E '/<(TL\.PREFShowThroughEditsState|MZ\.SQShowDuplicateMarkers)>/d' "$PREFS"
+    run customise_premiere_pro "$PREFS" "x.kys" "WS" "$v"
+    assert_success
+    refute_output --partial 'not found and skipped'
+    run cat "$PREFS"
+    assert_output --partial '<TL.PREFShowThroughEditsState>true</TL.PREFShowThroughEditsState>'
+    assert_output --partial '<MZ.SQShowDuplicateMarkers>true</MZ.SQShowDuplicateMarkers>'
+    run xmllint --noout "$PREFS"
+    assert_success
+  done
+}
+
+# On a non-whitelisted version an absent node is reported and skipped, leaving
+# the file untouched for it.
+@test "force nodes are skipped (not created) on a non-whitelisted version" {
+  copy_prefs "${PREMIERE_VERSIONS[0]}"
+  sed -i.bak -E '/<(TL\.PREFShowThroughEditsState|MZ\.SQShowDuplicateMarkers)>/d' "$PREFS"
+  run customise_premiere_pro "$PREFS" "x.kys" "WS" "0.0"
+  assert_success
+  assert_output --partial 'not found and skipped'
+  assert_output --partial 'TL.PREFShowThroughEditsState'
+  assert_output --partial 'MZ.SQShowDuplicateMarkers'
+  run cat "$PREFS"
+  refute_output --partial 'ShowThroughEditsState'
+  refute_output --partial 'SQShowDuplicateMarkers'
 }
 
 @test "output prefs is valid XML" {
