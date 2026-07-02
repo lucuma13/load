@@ -32,6 +32,7 @@ brew_prefix() {
 would_run() { echo "  🚀  $1"; }
 would_skip() { echo "  ⏭️  $1"; }
 already_done() { echo "  ✅  $1"; }
+checking() { echo "  🔎  $1"; }
 
 # quiet_run <cmd…> — run a command fully silent on success: buffer its combined
 # output and echo it only if the command fails, then propagate the failure (so
@@ -190,33 +191,6 @@ pkg_alias() {
 
 # Sourced as a library (tests set LOAD_LIB=1): stop here, run nothing below.
 [ -n "${LOAD_LIB:-}" ] && return 0 2>/dev/null
-
-# -----------------------------------------------------------------------------
-# Working-directory guard
-#
-# If launched from a folder the shell can no longer resolve (deleted/renamed, or
-# a macOS privacy-protected location the terminal lacks access to), getcwd()
-# fails and every subshell, `cd`, and python3 call spews "getcwd: cannot access
-# parent directories: Operation not permitted" / PermissionError. Nothing below
-# depends on the launch dir (all paths are $HOME-absolute), so relocate to a dir
-# we can resolve. Use /bin/pwd (real getcwd) — the builtin can pass on stale $PWD.
-# Kept before `set -e` so the fallback loop can't trip it.
-# -----------------------------------------------------------------------------
-if ! /bin/pwd >/dev/null 2>&1; then
-  for _d in "$HOME/Downloads" "$HOME" /tmp; do
-    cd "$_d" 2>/dev/null && /bin/pwd >/dev/null 2>&1 && break
-  done
-  if ! /bin/pwd >/dev/null 2>&1; then
-    echo "  ❌  Can't resolve the current directory (getcwd failed) and couldn't move"
-    echo "      to a usable one. This usually means the terminal was launched from a"
-    echo "      folder that was deleted, or a macOS privacy-protected location"
-    echo "      (Desktop / Documents / Downloads)."
-    echo "      Fix: open a new terminal, run 'cd ~', then re-run this script. If it"
-    echo "      persists, grant your terminal Full Disk Access in"
-    echo "      System Settings → Privacy & Security → Full Disk Access."
-    exit 1
-  fi
-fi
 
 set -euo pipefail
 
@@ -585,7 +559,7 @@ plistlib.dump(p,open(path,'wb'))
 
   # Homebrew — install it, or refresh it (update + cleanup) when already present.
   if ! $BREW_OK; then
-    would_run "Installing Homebrew…"
+    would_run "Installing Homebrew"
     echo | quiet_run /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
     PREFIX="$(brew_prefix)"
@@ -601,7 +575,7 @@ plistlib.dump(p,open(path,'wb'))
 
   # Update a pre-existing Homebrew (but don't upgrade packages that are not ours).
   if $BREW_OK; then
-    would_run "Updating Homebrew…"
+    would_run "Updating Homebrew"
     quiet_run brew update
     quiet_run brew cleanup
   fi
@@ -609,7 +583,7 @@ plistlib.dump(p,open(path,'wb'))
   # Core managed packages. Skip the MediaInfo GUI cask only when a MediaInfo.app is
   # present but NOT brew-managed (e.g. the better-integrated App Store build) — don't
   # override or adopt it.
-  would_run "Installing core packages: $(echo $CORE_FORMULAE | tr ' ' ,)…"
+  checking "Core packages: $(echo $CORE_FORMULAE | tr ' ' ,)"
   quiet_run brew install --adopt $CORE_FORMULAE
   local core_casks=""
   for cask in $CORE_CASKS; do
@@ -618,11 +592,11 @@ plistlib.dump(p,open(path,'wb'))
   done
   # install --adopt brings in anything missing; upgrade --greedy then updates the
   # already-installed casks.
-  would_run "Installing core casks: $(echo $core_casks | tr ' ' ,)…"
+  checking "Core casks: $(echo $core_casks | tr ' ' ,)"
   quiet_run brew install --cask --adopt $core_casks
   quiet_run brew upgrade --cask --greedy $core_casks
   # --quiet drops uv's resolve/install progress on success but still prints errors.
-  would_run "Installing uv tools: $(echo $CORE_UV | tr ' ' ,)…"
+  checking "uv tools: $(echo $CORE_UV | tr ' ' ,)"
   for pkg in $CORE_UV; do uv tool install "$pkg" --upgrade --quiet; done
 
   # Ensure uv-installed CLI tools (~/.local/bin) are on PATH. `uv tool
@@ -693,7 +667,7 @@ PY
 
   # Full-only managed packages
   if $FULL; then
-    would_run "Installing full-only packages: $(echo $FULL_FORMULAE $FULL_CASKS | tr ' ' ,)…"
+    checking "Full-only packages: $(echo $FULL_FORMULAE $FULL_CASKS | tr ' ' ,)"
     quiet_run brew install --adopt $FULL_FORMULAE
     quiet_run brew install --cask --adopt $FULL_CASKS
     quiet_run brew upgrade --cask --greedy $FULL_CASKS
@@ -707,7 +681,7 @@ PY
   # download the Product Manager installer and run it; Animation Composer itself is
   # then installed from within the app on first launch.
   if $PREMIERE_OK; then
-    would_run "Installing Mister Horse Product Manager…"
+    would_run "Installing Mister Horse Product Manager"
     PM_DMG="$WORKDIR/MisterHorseProductManager.dmg"
     curl -fsSL -o "$PM_DMG" "https://misterhorse.com/downloads/product-manager/osx"
     VOL="$(hdiutil attach "$PM_DMG" -nobrowse | grep -o '/Volumes/.*' | head -1 || true)"
@@ -718,12 +692,43 @@ PY
 
     # Flicker Free — Digital Anarchy's deflicker plugin. The DMG holds a .pkg we
     # install straight to the system; the plugin then shows up in Premiere/AE.
-    would_run "Installing Flicker Free…"
+    would_run "Installing Flicker Free"
     FF_DMG="$WORKDIR/flickerfree_229_AE.dmg"
     curl -fsSL -o "$FF_DMG" "https://www.digitalanarchy.com/downloads/flickerfree_229_AE.dmg"
     FF_VOL="$(hdiutil attach "$FF_DMG" -nobrowse | grep -o '/Volumes/.*' | head -1 || true)"
     FF_PKG="$(find "$FF_VOL" -maxdepth 1 -name '*.pkg' 2>/dev/null | head -1 || true)"
+    # The pkg's preinstall script unconditionally runs `open <registration URL>`,
+    # popping Digital Anarchy's sign-up page in the default browser — pure noise on an
+    # unattended run. Close the tab that lands on that URL — in Safari and Chrome -
+    # and clean up if that leaves an empty window behind.
     [ -n "$FF_PKG" ] && sudo installer -pkg "$FF_PKG" -target /
+    sleep 3
+    osascript <<'APPLESCRIPT' &>/dev/null || true
+repeat with appName in {"Safari", "Google Chrome"}
+  if application appName is running then
+    tell application appName
+      set matchingTabs to {}
+      repeat with w in windows
+        repeat with t in tabs of w
+          if (URL of t contains "digitalanarchy.com") and (URL of t contains "registration") then
+            set end of matchingTabs to t
+          end if
+        end repeat
+      end repeat
+      repeat with t in matchingTabs
+        close t
+      end repeat
+      set emptyWindows to {}
+      repeat with w in windows
+        if (count of tabs of w) = 0 then set end of emptyWindows to w
+      end repeat
+      repeat with w in emptyWindows
+        close w
+      end repeat
+    end tell
+  end if
+end repeat
+APPLESCRIPT
     [ -n "$FF_VOL" ] && hdiutil detach "$FF_VOL" -quiet
     rm -f "$FF_DMG"
   fi
@@ -776,6 +781,7 @@ main() {
 
   ▶️  Fast loading is complete. Press enter to continue on FULL mode " >&3
     read -r _ <&3 || true
+    echo ""
     exec 3>&-
     FAST=false
     FULL=true
