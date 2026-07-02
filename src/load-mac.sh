@@ -32,7 +32,7 @@ brew_prefix() {
 would_run() { echo "  🚀  $1"; }
 would_skip() { echo "  ⏭️  $1"; }
 already_done() { echo "  ✅  $1"; }
-checking() { echo "  🔎  $1"; }
+checking() { echo "  Checking $1..."; }
 
 # quiet_run <cmd…> — run a command fully silent on success: buffer its combined
 # output and echo it only if the command fails, then propagate the failure (so
@@ -552,7 +552,7 @@ plistlib.dump(p,open(path,'wb'))
   # Cache sudo credentials (only the steps below need root) and keep them alive
   sudo -v
   while true; do
-    sudo -n true
+    sudo -n true || true
     sleep 60
     kill -0 "$$" || exit
   done 2>/dev/null &
@@ -575,7 +575,7 @@ plistlib.dump(p,open(path,'wb'))
 
   # Update a pre-existing Homebrew (but don't upgrade packages that are not ours).
   if $BREW_OK; then
-    would_run "Updating Homebrew"
+    checking "Homebrew"
     quiet_run brew update
     quiet_run brew cleanup
   fi
@@ -583,7 +583,7 @@ plistlib.dump(p,open(path,'wb'))
   # Core managed packages. Skip the MediaInfo GUI cask only when a MediaInfo.app is
   # present but NOT brew-managed (e.g. the better-integrated App Store build) — don't
   # override or adopt it.
-  checking "Core packages: $(echo $CORE_FORMULAE | tr ' ' ,)"
+  checking "core packages"
   quiet_run brew install --adopt $CORE_FORMULAE
   local core_casks=""
   for cask in $CORE_CASKS; do
@@ -592,11 +592,10 @@ plistlib.dump(p,open(path,'wb'))
   done
   # install --adopt brings in anything missing; upgrade --greedy then updates the
   # already-installed casks.
-  checking "Core casks: $(echo $core_casks | tr ' ' ,)"
   quiet_run brew install --cask --adopt $core_casks
   quiet_run brew upgrade --cask --greedy $core_casks
   # --quiet drops uv's resolve/install progress on success but still prints errors.
-  checking "uv tools: $(echo $CORE_UV | tr ' ' ,)"
+  checking "uv tools"
   for pkg in $CORE_UV; do uv tool install "$pkg" --upgrade --quiet; done
 
   # Ensure uv-installed CLI tools (~/.local/bin) are on PATH. `uv tool
@@ -667,7 +666,7 @@ PY
 
   # Full-only managed packages
   if $FULL; then
-    checking "Full-only packages: $(echo $FULL_FORMULAE $FULL_CASKS | tr ' ' ,)"
+    checking "extra packages"
     quiet_run brew install --adopt $FULL_FORMULAE
     quiet_run brew install --cask --adopt $FULL_CASKS
     quiet_run brew upgrade --cask --greedy $FULL_CASKS
@@ -681,18 +680,17 @@ PY
   # download the Product Manager installer and run it; Animation Composer itself is
   # then installed from within the app on first launch.
   if $PREMIERE_OK; then
-    would_run "Installing Mister Horse Product Manager"
+    checking "plugins"
     PM_DMG="$WORKDIR/MisterHorseProductManager.dmg"
     curl -fsSL -o "$PM_DMG" "https://misterhorse.com/downloads/product-manager/osx"
     VOL="$(hdiutil attach "$PM_DMG" -nobrowse | grep -o '/Volumes/.*' | head -1 || true)"
     PM_APP="$(find "$VOL" -maxdepth 1 -name '*.app' 2>/dev/null | head -1 || true)"
-    [ -n "$PM_APP" ] && sudo cp -R "$PM_APP" /Applications/
+    [ -n "$PM_APP" ] && quiet_run sudo cp -R "$PM_APP" /Applications/
     [ -n "$VOL" ] && hdiutil detach "$VOL" -quiet
     rm -f "$PM_DMG"
 
     # Flicker Free — Digital Anarchy's deflicker plugin. The DMG holds a .pkg we
     # install straight to the system; the plugin then shows up in Premiere/AE.
-    would_run "Installing Flicker Free"
     FF_DMG="$WORKDIR/flickerfree_229_AE.dmg"
     curl -fsSL -o "$FF_DMG" "https://www.digitalanarchy.com/downloads/flickerfree_229_AE.dmg"
     FF_VOL="$(hdiutil attach "$FF_DMG" -nobrowse | grep -o '/Volumes/.*' | head -1 || true)"
@@ -700,35 +698,38 @@ PY
     # The pkg's preinstall script unconditionally runs `open <registration URL>`,
     # popping Digital Anarchy's sign-up page in the default browser — pure noise on an
     # unattended run. Close the tab that lands on that URL — in Safari and Chrome -
-    # and clean up if that leaves an empty window behind.
-    [ -n "$FF_PKG" ] && sudo installer -pkg "$FF_PKG" -target /
+    # and clean up if that leaves an empty window behind. The app name must be a
+    # literal in the AppleScript (interpolated per call from bash) — `tell application
+    # appName` with appName as an AppleScript variable breaks Safari/Chrome's `tabs of
+    # window` coercion (-1700, confirmed by hand).
+    [ -n "$FF_PKG" ] && quiet_run sudo installer -pkg "$FF_PKG" -target /
     sleep 3
-    osascript <<'APPLESCRIPT' &>/dev/null || true
-repeat with appName in {"Safari", "Google Chrome"}
-  if application appName is running then
-    tell application appName
-      set matchingTabs to {}
-      repeat with w in windows
-        repeat with t in tabs of w
-          if (URL of t contains "digitalanarchy.com") and (URL of t contains "registration") then
-            set end of matchingTabs to t
-          end if
-        end repeat
+    for ff_browser_app in "Safari" "Google Chrome"; do
+      osascript <<APPLESCRIPT &>/dev/null || true
+if application "$ff_browser_app" is running then
+  tell application "$ff_browser_app"
+    set matchingTabs to {}
+    repeat with w in windows
+      repeat with t in tabs of w
+        if (URL of t contains "digitalanarchy.com") and (URL of t contains "registration") then
+          set end of matchingTabs to t
+        end if
       end repeat
-      repeat with t in matchingTabs
-        close t
-      end repeat
-      set emptyWindows to {}
-      repeat with w in windows
-        if (count of tabs of w) = 0 then set end of emptyWindows to w
-      end repeat
-      repeat with w in emptyWindows
-        close w
-      end repeat
-    end tell
-  end if
-end repeat
+    end repeat
+    repeat with t in matchingTabs
+      close t
+    end repeat
+    set emptyWindows to {}
+    repeat with w in windows
+      if (count of tabs of w) = 0 then set end of emptyWindows to w
+    end repeat
+    repeat with w in emptyWindows
+      close w
+    end repeat
+  end tell
+end if
 APPLESCRIPT
+    done
     [ -n "$FF_VOL" ] && hdiutil detach "$FF_VOL" -quiet
     rm -f "$FF_DMG"
   fi
