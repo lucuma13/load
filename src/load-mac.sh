@@ -191,6 +191,33 @@ pkg_alias() {
 # Sourced as a library (tests set LOAD_LIB=1): stop here, run nothing below.
 [ -n "${LOAD_LIB:-}" ] && return 0 2>/dev/null
 
+# -----------------------------------------------------------------------------
+# Working-directory guard
+#
+# If launched from a folder the shell can no longer resolve (deleted/renamed, or
+# a macOS privacy-protected location the terminal lacks access to), getcwd()
+# fails and every subshell, `cd`, and python3 call spews "getcwd: cannot access
+# parent directories: Operation not permitted" / PermissionError. Nothing below
+# depends on the launch dir (all paths are $HOME-absolute), so relocate to a dir
+# we can resolve. Use /bin/pwd (real getcwd) — the builtin can pass on stale $PWD.
+# Kept before `set -e` so the fallback loop can't trip it.
+# -----------------------------------------------------------------------------
+if ! /bin/pwd >/dev/null 2>&1; then
+  for _d in "$HOME/Downloads" "$HOME" /tmp; do
+    cd "$_d" 2>/dev/null && /bin/pwd >/dev/null 2>&1 && break
+  done
+  if ! /bin/pwd >/dev/null 2>&1; then
+    echo "  ❌  Can't resolve the current directory (getcwd failed) and couldn't move"
+    echo "      to a usable one. This usually means the terminal was launched from a"
+    echo "      folder that was deleted, or a macOS privacy-protected location"
+    echo "      (Desktop / Documents / Downloads)."
+    echo "      Fix: open a new terminal, run 'cd ~', then re-run this script. If it"
+    echo "      persists, grant your terminal Full Disk Access in"
+    echo "      System Settings → Privacy & Security → Full Disk Access."
+    exit 1
+  fi
+fi
+
 set -euo pipefail
 
 # -----------------------------------------------------------------------------
@@ -510,7 +537,12 @@ run_slow() {
   if ! xcode-select -p &>/dev/null; then
     echo "  🚀  Command Line Tools — installing (accept the dialog; this can take a few minutes)…"
     xcode-select --install &>/dev/null || true
-    until xcode-select -p &>/dev/null; do sleep 10; done
+    # The installer window opens behind the terminal, so nudge it to the front
+    # while we wait so the user doesn't miss the dialog.
+    until xcode-select -p &>/dev/null; do
+      osascript -e 'tell application "System Events" to set frontmost of (first process whose name is "Install Command Line Developer Tools") to true' &>/dev/null || true
+      sleep 10
+    done
   fi
 
   # Finder "Calculate all sizes" — a nested plist key defaults(1) can't reach, so
@@ -553,7 +585,8 @@ plistlib.dump(p,open(path,'wb'))
 
   # Homebrew — install it, or refresh it (update + cleanup) when already present.
   if ! $BREW_OK; then
-    echo | /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+    would_run "Installing Homebrew…"
+    echo | quiet_run /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
     PREFIX="$(brew_prefix)"
     SHELLENV_LINE="eval \"\$(${PREFIX}/bin/brew shellenv)\""
@@ -568,6 +601,7 @@ plistlib.dump(p,open(path,'wb'))
 
   # Update a pre-existing Homebrew (but don't upgrade packages that are not ours).
   if $BREW_OK; then
+    would_run "Updating Homebrew…"
     quiet_run brew update
     quiet_run brew cleanup
   fi
@@ -575,6 +609,7 @@ plistlib.dump(p,open(path,'wb'))
   # Core managed packages. Skip the MediaInfo GUI cask only when a MediaInfo.app is
   # present but NOT brew-managed (e.g. the better-integrated App Store build) — don't
   # override or adopt it.
+  would_run "Installing core packages: $(echo $CORE_FORMULAE | tr ' ' ,)…"
   quiet_run brew install --adopt $CORE_FORMULAE
   local core_casks=""
   for cask in $CORE_CASKS; do
@@ -583,9 +618,11 @@ plistlib.dump(p,open(path,'wb'))
   done
   # install --adopt brings in anything missing; upgrade --greedy then updates the
   # already-installed casks.
+  would_run "Installing core casks: $(echo $core_casks | tr ' ' ,)…"
   quiet_run brew install --cask --adopt $core_casks
   quiet_run brew upgrade --cask --greedy $core_casks
   # --quiet drops uv's resolve/install progress on success but still prints errors.
+  would_run "Installing uv tools: $(echo $CORE_UV | tr ' ' ,)…"
   for pkg in $CORE_UV; do uv tool install "$pkg" --upgrade --quiet; done
 
   # Ensure uv-installed CLI tools (~/.local/bin) are on PATH. `uv tool
@@ -647,7 +684,6 @@ try:
             d.delete('Downloads', b'lsvC')
         d.insert(ds_store.DSStoreEntry('Downloads', b'lsvC', b'blob',
                                        plistlib.dumps(pl, fmt=plistlib.FMT_BINARY)))
-    print("  ✅  Downloads set to list view, sorted by Date Added")
 except Exception as ex:
     print("  ⚠️  Downloads sort skipped:", ex)
 PY
@@ -657,6 +693,7 @@ PY
 
   # Full-only managed packages
   if $FULL; then
+    would_run "Installing full-only packages: $(echo $FULL_FORMULAE $FULL_CASKS | tr ' ' ,)…"
     quiet_run brew install --adopt $FULL_FORMULAE
     quiet_run brew install --cask --adopt $FULL_CASKS
     quiet_run brew upgrade --cask --greedy $FULL_CASKS
@@ -670,6 +707,7 @@ PY
   # download the Product Manager installer and run it; Animation Composer itself is
   # then installed from within the app on first launch.
   if $PREMIERE_OK; then
+    would_run "Installing Mister Horse Product Manager…"
     PM_DMG="$WORKDIR/MisterHorseProductManager.dmg"
     curl -fsSL -o "$PM_DMG" "https://misterhorse.com/downloads/product-manager/osx"
     VOL="$(hdiutil attach "$PM_DMG" -nobrowse | grep -o '/Volumes/.*' | head -1 || true)"
@@ -680,6 +718,7 @@ PY
 
     # Flicker Free — Digital Anarchy's deflicker plugin. The DMG holds a .pkg we
     # install straight to the system; the plugin then shows up in Premiere/AE.
+    would_run "Installing Flicker Free…"
     FF_DMG="$WORKDIR/flickerfree_229_AE.dmg"
     curl -fsSL -o "$FF_DMG" "https://www.digitalanarchy.com/downloads/flickerfree_229_AE.dmg"
     FF_VOL="$(hdiutil attach "$FF_DMG" -nobrowse | grep -o '/Volumes/.*' | head -1 || true)"
@@ -735,7 +774,7 @@ main() {
     printf ""
     printf '%s' "
 
-  ▶️ Fast loading is complete. Press enter to continue on FULL mode " >&3
+  ▶️  Fast loading is complete. Press enter to continue on FULL mode " >&3
     read -r _ <&3 || true
     exec 3>&-
     FAST=false
