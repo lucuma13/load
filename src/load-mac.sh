@@ -168,7 +168,6 @@ premiere_set_media_cache() {
 CORE_FORMULAE="media-info exiftool ffmpeg uv"
 CORE_CASKS="vlc caffeine mediainfo"
 CORE_UV="triplecheck mhl-suite"
-FULL_FORMULAE="git" # add these if needed: atomicparsley, bento4, wget
 FULL_CASKS="google-chrome adobe-acrobat-reader audacity mediahuman-audio-converter appcleaner"
 
 # Friendly display names for the brew/uv ids (used by the checklist). Anything
@@ -347,7 +346,6 @@ checklist() {
   # each paired with its installed check (mirrors the Windows checklist's one merged
   # line). Friendly names come from pkg_alias.
   local formulae_list="$CORE_FORMULAE" casks_list="$CORE_CASKS"
-  $FULL && formulae_list="$formulae_list $FULL_FORMULAE"
   $FULL && casks_list="$casks_list $FULL_CASKS"
 
   local apps_all="" apps_done="" apps_todo="" pkg name
@@ -638,10 +636,9 @@ TEMPLATE = {
         {'identifier': 'kind',         'visible': True, 'width': 115, 'ascending': True},
     ],
 }
-try:
-    mode = 'r+' if os.path.exists(home) else 'w+'
+def apply_downloads_sort(mode):
     with ds_store.DSStore.open(home, mode) as d:
-        ent = {e.code: e for e in d if e.filename == 'Downloads'}
+        ent = {e.code: e for e in d if e.filename == 'Downloads'} if mode == 'r+' else {}
         # View style -> list
         if b'vstl' in ent:
             d.delete('Downloads', b'vstl')
@@ -657,8 +654,23 @@ try:
             d.delete('Downloads', b'lsvC')
         d.insert(ds_store.DSStoreEntry('Downloads', b'lsvC', b'blob',
                                        plistlib.dumps(pl, fmt=plistlib.FMT_BINARY)))
-except Exception as ex:
-    print("  ⚠️  Downloads sort skipped:", ex)
+
+try:
+    apply_downloads_sort('r+' if os.path.exists(home) else 'w+')
+except Exception:
+    # A heavily-used ~/.DS_Store can pack a B-tree node right up to its 4KB page
+    # limit; inserting our entry there can overflow a known bug in the ds-store
+    # library (store.py _split -> _split2 returns None, unhandled). ~/.DS_Store
+    # only caches Finder view state (icon positions, window sizes, per-folder
+    # view options) that Finder regenerates on demand, so recover by dropping it
+    # and rebuilding fresh rather than trying to repair the existing B-tree.
+    try:
+        if os.path.exists(home):
+            os.remove(home)
+        apply_downloads_sort('w+')
+        print("  ⚠️  ~/.DS_Store was rebuilt from scratch (existing Finder view state was too bloated to edit in place)")
+    except Exception as ex2:
+        print("  ⚠️  Downloads sort skipped:", ex2)
 PY
     sleep 1
     open -a Finder 2>/dev/null || true
@@ -667,7 +679,6 @@ PY
   # Full-only managed packages
   if $FULL; then
     checking "extra packages"
-    quiet_run brew install --adopt $FULL_FORMULAE
     quiet_run brew install --cask --adopt $FULL_CASKS
     quiet_run brew upgrade --cask --greedy $FULL_CASKS
   fi
