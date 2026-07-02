@@ -510,7 +510,12 @@ run_slow() {
   if ! xcode-select -p &>/dev/null; then
     echo "  🚀  Command Line Tools — installing (accept the dialog; this can take a few minutes)…"
     xcode-select --install &>/dev/null || true
-    until xcode-select -p &>/dev/null; do sleep 10; done
+    # The installer window opens behind the terminal, so nudge it to the front
+    # while we wait so the user doesn't miss the dialog.
+    until xcode-select -p &>/dev/null; do
+      osascript -e 'tell application "System Events" to set frontmost of (first process whose name is "Install Command Line Developer Tools") to true' &>/dev/null || true
+      sleep 10
+    done
   fi
 
   # Finder "Calculate all sizes" — a nested plist key defaults(1) can't reach, so
