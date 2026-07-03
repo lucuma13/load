@@ -81,15 +81,11 @@ quiet_run() {
   return "$rc"
 }
 
-# cask_soft <brew cask cmd…> — a cask install/upgrade that must NOT abort the run. A
-# single pre-existing-app conflict (a different version already in /Applications
-# refuses --adopt, e.g. a hand-installed Audacity) shouldn't cost us the plugins and
-# ProVideoFormats that install afterwards. quiet_run still surfaces the failure's
-# output; we note it and carry on. Always returns 0.
-cask_soft() {
-  quiet_run "$@" ||
-    echo "  ⚠️  A cask needs attention (see above — often a different version already in /Applications); continuing"
-}
+# cask_soft <brew cask cmd…> — run a cask op non-fatally so one failure can't abort
+# the machine phase (the plugins and ProVideoFormats after it still run). quiet_run
+# still surfaces brew's own output on a genuine failure; we just don't editorialise.
+# Always returns 0.
+cask_soft() { quiet_run "$@" || true; }
 
 # install_casks <cask…> — install/adopt casks, bringing any that already exist up to
 # the cask's latest version. Fast path: one batched `--adopt` (installs what's
