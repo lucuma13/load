@@ -97,12 +97,16 @@ cask_soft() { quiet_run "$@" || true; }
 # quick no-ops, so the fallback stays cheap. Never aborts the run.
 install_casks() {
   [ $# -gt 0 ] || return 0
-  quiet_run brew install --cask --adopt "$@" && return 0
+  # Fast path: one batched --adopt. Silent even on failure — a version-mismatch
+  # conflict here isn't a real error, it just means "fall through to per-cask".
+  brew install --cask --adopt "$@" &>/dev/null && return 0
   local c
   for c in "$@"; do
-    quiet_run brew install --cask --adopt "$c" && continue
+    # Already-current casks re-adopt as silent no-ops; a different existing version
+    # makes --adopt fail (silently), so replace it with the cask's latest via --force.
+    brew install --cask --adopt "$c" &>/dev/null && continue
     echo "  ↻  $c: a different version is already installed — replacing it with the latest"
-    cask_soft brew install --cask --force "$c"
+    cask_soft brew install --cask --force "$c" # quiet_run shows output only if --force itself fails
   done
 }
 
@@ -752,18 +756,18 @@ plistlib.dump(p,open(path,'wb'))
     [ -n "$core_casks_preexisting" ] && cask_soft brew upgrade --cask --greedy $core_casks_preexisting
   fi
   # --quiet drops uv's resolve/install progress on success but still prints errors.
+  # All of this is per-user: the tools install into ~/.local and update-shell writes
+  # the current account's shell profile — the admin sub-run must not touch it (it
+  # would edit the admin's profile and warn about its PATH).
   if $DO_USER; then
     checking "uv tools"
     for pkg in $CORE_UV; do uv tool install "$pkg" --upgrade --quiet; done
+    # Ensure uv-installed CLI tools (~/.local/bin) are on PATH. `uv tool update-shell`
+    # detects the active shell and updates the right profile (safer than hardcoding
+    # ~/.zprofile). Idempotent. Export covers the current session.
+    command -v uv &>/dev/null && uv tool update-shell --quiet || true
+    export PATH="$HOME/.local/bin:$PATH"
   fi
-
-  # Ensure uv-installed CLI tools (~/.local/bin) are on PATH. `uv tool
-  # update-shell` detects the active shell and updates the right profile (safer
-  # than hardcoding ~/.zprofile). Idempotent. Export covers the current session.
-  if command -v uv &>/dev/null; then
-    uv tool update-shell --quiet || true
-  fi
-  export PATH="$HOME/.local/bin:$PATH"
 
   # Downloads sort — put ~/Downloads in list view, sorted by Date Added (newest
   # first). A folder's view/sort has no `defaults` key, and Finder's AppleScript view
