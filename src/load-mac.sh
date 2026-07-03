@@ -288,7 +288,8 @@ WORKDIR="$HOME/Downloads/load-mac"
 # Premiere shortcut set + workspace we distribute (used by run_fast and the
 # "is it applied?" checklist detector).
 KYS_FILE="LGG_25.1.kys"
-WS_FILE="UserWorkspace_LGG.xml"
+WS_FILE_1="UserWorkspace_LGG_1.xml"
+WS_FILE_2="UserWorkspace_LGG_2.xml"
 
 # -----------------------------------------------------------------------------
 # Checklist — the live state of every action, derived from the real current state
@@ -493,9 +494,10 @@ run_fast() {
       # Drop the shortcuts into the Profile's Mac folder (where Premiere reads custom sets)
       (cd "${profile}Mac" && curl -fsSL -O "https://raw.githubusercontent.com/lucuma13/load/main/src/data/$KYS_FILE")
 
-      # Drop the workspace into Layouts. Premiere auto-registers it on launch.
-      (cd "${profile}Layouts" && curl -fsSL -O "https://raw.githubusercontent.com/lucuma13/load/main/src/data/$WS_FILE")
-      ws_name="$(premiere_workspace_name "${profile}Layouts/$WS_FILE")"
+      # Drop the workspaces into Layouts. Premiere auto-registers them on launch.
+      (cd "${profile}Layouts" && curl -fsSL -O "https://raw.githubusercontent.com/lucuma13/load/main/src/data/$WS_FILE_1")
+      (cd "${profile}Layouts" && curl -fsSL -O "https://raw.githubusercontent.com/lucuma13/load/main/src/data/$WS_FILE_2")
+      ws_name="$(premiere_workspace_name "${profile}Layouts/$WS_FILE_1")"
 
       if $PREMIERE_RUNNING; then
         echo "  ⚠️  Premiere Pro is running — files dropped but not activated"

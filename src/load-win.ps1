@@ -298,7 +298,8 @@ $WINGET_OK = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
 
 # Premiere shortcut set + workspace we distribute
 $KYS_FILE = "LGG_25.1_WINDOWS.kys"
-$LAYOUT_FILE = "UserWorkspace_LGG.xml"
+$LAYOUT_FILE_1 = "UserWorkspace_LGG_1.xml"
+$LAYOUT_FILE_2 = "UserWorkspace_LGG_2.xml"
 
 # Keyboard repeat
 $KB_Speed = (Get-ItemProperty -Path "HKCU:\Control Panel\Keyboard" -Name "KeyboardSpeed" -ErrorAction SilentlyContinue).KeyboardSpeed
@@ -516,9 +517,10 @@ function Invoke-FastPass {
             # them rather than creating them ourselves.
             # Drop the shortcuts into the Profile's Win folder (where Premiere reads custom sets)
             curl.exe -s --output-dir $winDir  -O "https://raw.githubusercontent.com/lucuma13/load/refs/heads/main/src/data/$KYS_FILE"
-            # Drop the workspace into Layouts. Premiere auto-registers it on launch.
-            curl.exe -s --output-dir $layouts -O "https://raw.githubusercontent.com/lucuma13/load/refs/heads/main/src/data/$LAYOUT_FILE"
-            $wsName = Get-WorkspaceName (Join-Path $layouts $LAYOUT_FILE)
+            # Drop the workspaces into Layouts. Premiere auto-registers them on launch.
+            curl.exe -s --output-dir $layouts -O "https://raw.githubusercontent.com/lucuma13/load/refs/heads/main/src/data/$LAYOUT_FILE_1"
+            curl.exe -s --output-dir $layouts -O "https://raw.githubusercontent.com/lucuma13/load/refs/heads/main/src/data/$LAYOUT_FILE_2"
+            $wsName = Get-WorkspaceName (Join-Path $layouts $LAYOUT_FILE_1)
 
             if ($PREMIERE_RUNNING) {
                 Write-Host "  [warn] Premiere Pro is running - files dropped but not activated"
