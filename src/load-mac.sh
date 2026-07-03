@@ -43,13 +43,16 @@ brew_admin_owner() {
 
 # run_machine_via_admin — from a standard (non-admin) account that can't sudo, hand
 # the machine-wide install phase to an admin. Prompts on the tty for an admin user,
-# then re-invokes this script AS that user with --machine-only (one `su` password
-# prompt covers the whole batch; brew runs as the prefix owner, the pkg installers
-# sudo as the admin). Returns non-zero if there's no tty, the user declines, no admin
-# is found, or the sub-run fails — so the caller falls back to per-user-only config.
+# then re-invokes this script AS that user with --machine-only. Both password
+# prompts belong to the ADMIN account: the first is `su`, the second is the `sudo`
+# that a pkg-based cask (e.g. adobe-acrobat-reader) runs internally — brew resets the
+# sudo timestamp on every call, so that one can't be pre-authenticated away.
+# Exit codes: 2 = couldn't even switch to an admin (no tty, declined, none found),
+# so the caller reports a clean skip; any other non-zero = the admin sub-run itself
+# returned an error. 0 = success.
 run_machine_via_admin() {
   local admin ans
-  [ -e /dev/tty ] || return 1
+  [ -e /dev/tty ] || return 2
   admin="$(brew_admin_owner)"
   {
     printf '\n  This account is not an administrator; machine-wide software needs one.\n'
@@ -57,8 +60,8 @@ run_machine_via_admin() {
     read -r ans || true
   } <>/dev/tty >/dev/tty 2>&1
   [ -n "$ans" ] && admin="$ans"
-  [ -n "$admin" ] || return 1
-  echo "  🔑  Switching to '$admin' for the machine-wide install — enter that account's password:"
+  [ -n "$admin" ] || return 2
+  echo "  🔑  Switching to '$admin' for the machine-wide install — both password prompts are for THIS admin account:"
   su -l "$admin" -c "curl -fsSL '$SELF_URL' | bash -s -- --machine-only$($FULL && printf ' --full')" <>/dev/tty
 }
 
@@ -76,6 +79,16 @@ quiet_run() {
   out="$("$@" 2>&1)" && rc=0 || rc=$?
   [ "$rc" -eq 0 ] || printf '%s\n' "$out"
   return "$rc"
+}
+
+# cask_soft <brew cask cmd…> — a cask install/upgrade that must NOT abort the run. A
+# single pre-existing-app conflict (a different version already in /Applications
+# refuses --adopt, e.g. a hand-installed Audacity) shouldn't cost us the plugins and
+# ProVideoFormats that install afterwards. quiet_run still surfaces the failure's
+# output; we note it and carry on. Always returns 0.
+cask_soft() {
+  quiet_run "$@" ||
+    echo "  ⚠️  A cask needs attention (see above — often a different version already in /Applications); continuing"
 }
 
 formula_installed() { $BREW_OK && brew list --formula "$1" &>/dev/null 2>&1; }
@@ -615,8 +628,13 @@ run_slow() {
   elif $IS_ADMIN; then
     DO_MACHINE=true # admin account: sudo works, do everything in this process
   else
-    run_machine_via_admin ||
-      would_skip "Machine-wide installs skipped — no admin account available (configuring this user only)"
+    local machine_rc=0
+    run_machine_via_admin || machine_rc=$?
+    case "$machine_rc" in
+    0) ;;
+    2) would_skip "Machine-wide installs skipped — no admin account available (configuring this user only)" ;;
+    *) echo "  ⚠️  The admin account's machine-wide install didn't finish cleanly (see output above) — some packages may be missing; continuing with per-user config" ;;
+    esac
   fi
 
   # Command Line Tools (provides git/python3; required by Homebrew). Without this,
@@ -715,8 +733,8 @@ plistlib.dump(p,open(path,'wb'))
     # adobe-acrobat-reader) it's a second separate `brew` process, which
     # re-authenticates sudo on every invocation and can prompt for the password
     # a second time in a row for no actual gain.
-    quiet_run brew install --cask --adopt $core_casks
-    [ -n "$core_casks_preexisting" ] && quiet_run brew upgrade --cask --greedy $core_casks_preexisting
+    cask_soft brew install --cask --adopt $core_casks
+    [ -n "$core_casks_preexisting" ] && cask_soft brew upgrade --cask --greedy $core_casks_preexisting
   fi
   # --quiet drops uv's resolve/install progress on success but still prints errors.
   if $DO_USER; then
@@ -815,8 +833,8 @@ PY
     # adopted in the `install` call right above it — already at the latest
     # version, and re-checking them is a second `brew` process that can
     # re-prompt for sudo on pkg-based casks like adobe-acrobat-reader.
-    quiet_run brew install --cask --adopt $FULL_CASKS
-    [ -n "$full_casks_preexisting" ] && quiet_run brew upgrade --cask --greedy $full_casks_preexisting
+    cask_soft brew install --cask --adopt $FULL_CASKS
+    [ -n "$full_casks_preexisting" ] && cask_soft brew upgrade --cask --greedy $full_casks_preexisting
   fi
 
   # Cache sudo credentials right here — not at the top of this function — because
