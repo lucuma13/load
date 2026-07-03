@@ -91,6 +91,25 @@ cask_soft() {
     echo "  ⚠️  A cask needs attention (see above — often a different version already in /Applications); continuing"
 }
 
+# install_casks <cask…> — install/adopt casks, bringing any that already exist up to
+# the cask's latest version. Fast path: one batched `--adopt` (installs what's
+# missing, adopts an already-matching unmanaged app, and keeps pkg-based casks to a
+# single sudo prompt). But `--adopt` refuses when an app of a DIFFERENT version is
+# already in /Applications (e.g. a hand-installed Audacity), so on failure we retry
+# per cask and `--force` only the ones that conflict — overwriting the old app with
+# the latest and taking it under brew management. Already-installed casks re-adopt as
+# quick no-ops, so the fallback stays cheap. Never aborts the run.
+install_casks() {
+  [ $# -gt 0 ] || return 0
+  quiet_run brew install --cask --adopt "$@" && return 0
+  local c
+  for c in "$@"; do
+    quiet_run brew install --cask --adopt "$c" && continue
+    echo "  ↻  $c: a different version is already installed — replacing it with the latest"
+    cask_soft brew install --cask --force "$c"
+  done
+}
+
 formula_installed() { $BREW_OK && brew list --formula "$1" &>/dev/null 2>&1; }
 cask_installed() { $BREW_OK && brew list --cask "$1" &>/dev/null 2>&1; }
 uv_installed() { command -v uv &>/dev/null && uv tool list 2>/dev/null | grep -q "^$1"; }
@@ -733,7 +752,7 @@ plistlib.dump(p,open(path,'wb'))
     # adobe-acrobat-reader) it's a second separate `brew` process, which
     # re-authenticates sudo on every invocation and can prompt for the password
     # a second time in a row for no actual gain.
-    cask_soft brew install --cask --adopt $core_casks
+    install_casks $core_casks
     [ -n "$core_casks_preexisting" ] && cask_soft brew upgrade --cask --greedy $core_casks_preexisting
   fi
   # --quiet drops uv's resolve/install progress on success but still prints errors.
@@ -833,7 +852,7 @@ PY
     # adopted in the `install` call right above it — already at the latest
     # version, and re-checking them is a second `brew` process that can
     # re-prompt for sudo on pkg-based casks like adobe-acrobat-reader.
-    cask_soft brew install --cask --adopt $FULL_CASKS
+    install_casks $FULL_CASKS
     [ -n "$full_casks_preexisting" ] && cask_soft brew upgrade --cask --greedy $full_casks_preexisting
   fi
 
