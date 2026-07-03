@@ -104,9 +104,10 @@ install_casks() {
   for c in "$@"; do
     # Already-current casks re-adopt as silent no-ops; a different existing version
     # makes --adopt fail (silently), so replace it with the cask's latest via --force.
+    # Adopt-and-upgrade is our default, so a conflict resolves quietly; only a genuine
+    # --force failure prints (via cask_soft's quiet_run).
     brew install --cask --adopt "$c" &>/dev/null && continue
-    echo "  ↻  $c: a different version is already installed — replacing it with the latest"
-    cask_soft brew install --cask --force "$c" # quiet_run shows output only if --force itself fails
+    cask_soft brew install --cask --force "$c"
   done
 }
 
