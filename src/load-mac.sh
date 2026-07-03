@@ -29,6 +29,39 @@ brew_prefix() {
   fi
 }
 
+# brew_admin_owner — best guess at an admin account to run machine-wide installs
+# as: the owner of the Homebrew prefix if brew exists (the admin who set it up),
+# else the first non-system member of the admin group. Empty if none found.
+brew_admin_owner() {
+  local owner=""
+  command -v brew &>/dev/null && owner="$(stat -f %Su "$(brew_prefix)" 2>/dev/null || true)"
+  case "$owner" in "" | root | _*) owner="" ;; esac
+  [ -n "$owner" ] || owner="$(dscl . -read /Groups/admin GroupMembership 2>/dev/null |
+    tr ' ' '\n' | grep -v -e '^GroupMembership:$' -e '^root$' -e '^_' | head -1 || true)"
+  echo "$owner"
+}
+
+# run_machine_via_admin — from a standard (non-admin) account that can't sudo, hand
+# the machine-wide install phase to an admin. Prompts on the tty for an admin user,
+# then re-invokes this script AS that user with --machine-only (one `su` password
+# prompt covers the whole batch; brew runs as the prefix owner, the pkg installers
+# sudo as the admin). Returns non-zero if there's no tty, the user declines, no admin
+# is found, or the sub-run fails — so the caller falls back to per-user-only config.
+run_machine_via_admin() {
+  local admin ans
+  [ -e /dev/tty ] || return 1
+  admin="$(brew_admin_owner)"
+  {
+    printf '\n  This account is not an administrator; machine-wide software needs one.\n'
+    printf '  Install it now via an admin account? Enter admin username [%s] (blank to skip): ' "$admin"
+    read -r ans || true
+  } <>/dev/tty >/dev/tty 2>&1
+  [ -n "$ans" ] && admin="$ans"
+  [ -n "$admin" ] || return 1
+  echo "  🔑  Switching to '$admin' for the machine-wide install — enter that account's password:"
+  su -l "$admin" -c "curl -fsSL '$SELF_URL' | bash -s -- --machine-only$($FULL && printf ' --full')" <>/dev/tty
+}
+
 would_run() { echo "  🚀  $1"; }
 would_skip() { echo "  ⏭️  $1"; }
 already_done() { echo "  ✅  $1"; }
@@ -237,13 +270,21 @@ case " $MODES " in *" fast "*) FAST=true ;; esac
 case " $MODES " in *" full "*) FULL=true ;; esac
 case " $MODES " in *" dryrun "*) DRY_RUN=true ;; esac
 
+# --machine-only: an internal re-invocation used by run_machine_via_admin. When a
+# standard (non-admin) user runs load, it re-invokes this script as an admin with
+# this flag to perform ONLY the machine-wide installs (Homebrew packages,
+# /Applications apps, ProVideoFormats) — never the per-user config, which must stay
+# with the original account. Not advertised in usage(); always paired with --full.
+MACHINE_ONLY=false
+for _arg in "$@"; do [ "$_arg" = "--machine-only" ] && MACHINE_ONLY=true; done
+
 # No flag given — run the Fast pass inline now (quick config), then pause and
 # continue into the Full pass in this same process (see the Dispatch section). We
 # need a terminal to prompt for that hand-off; under process substitution stdin may
 # be redirected, so probe /dev/tty rather than stdin. Bail if there is none (e.g.
 # CI) so we don't run a heavy install unattended.
 AUTO=false
-if [ -z "$MODES" ]; then
+if [ -z "$MODES" ] && ! $MACHINE_ONLY; then
   { exec 3<>/dev/tty; } 2>/dev/null || {
     usage
     exit 1
@@ -259,6 +300,11 @@ fi
 RUN_FAST=true
 RUN_SLOW=true
 $FAST && RUN_SLOW=false
+# The admin sub-run does machine-wide installs only: no per-user Fast pass.
+$MACHINE_ONLY && {
+  RUN_FAST=false
+  RUN_SLOW=true
+}
 
 # -----------------------------------------------------------------------------
 # Preflight
@@ -266,14 +312,34 @@ $FAST && RUN_SLOW=false
 
 PREMIERE_OK=false
 [ -d "$HOME/Documents/Adobe/Premiere Pro" ] && PREMIERE_OK=true
+# Machine-wide Premiere presence (the app in /Applications), independent of whose
+# home holds prefs. The machine-wide plugins (Mister Horse, Flicker Free) key off
+# this so they still install when an admin sub-run's own account never launched
+# Premiere. Per-user prefs work still keys off PREMIERE_OK.
+PREMIERE_MACHINE=false
+{ $PREMIERE_OK || ls -d /Applications/Adobe\ Premiere\ Pro* &>/dev/null; } && PREMIERE_MACHINE=true
 # Premiere rewrites its prefs on exit — activating a set while it's running would get clobbered.
 # Match the process name (version-agnostic) rather than full args, which would hit our own perl call.
 PREMIERE_RUNNING=false
 $PREMIERE_OK && pgrep "Adobe Premiere Pro" &>/dev/null 2>&1 && PREMIERE_RUNNING=true
 BREW_OK=false
-command -v brew &>/dev/null && BREW_OK=true
+# Homebrew is a single-user tool: its prefix is owned by whoever installed it.
+# On a shared Mac a standard user can't write to it (packages are already there
+# machine-wide), so track writability separately and gate mutating brew steps on it.
+BREW_RW=false
+if command -v brew &>/dev/null; then
+  BREW_OK=true
+  [ -w "$(brew_prefix)/Cellar" ] && BREW_RW=true
+fi
 PVF_OK=false
 pkgutil --pkg-info com.apple.pkg.ProVideoFormats &>/dev/null 2>&1 && PVF_OK=true
+# Admin accounts can sudo; standard accounts can't, so they hand the machine-wide
+# phase to an admin via `su` (see run_machine_via_admin). Membership in the admin
+# group is what grants sudo on macOS.
+IS_ADMIN=false
+id -Gn 2>/dev/null | tr ' ' '\n' | grep -qx admin && IS_ADMIN=true
+# Raw URL of this script, for the admin re-invocation.
+SELF_URL="https://raw.githubusercontent.com/lucuma13/load/main/src/load-mac.sh"
 # First mounted SCRATCH* volume, or "" if none.
 scratch_vols=(/Volumes/SCRATCH*)
 SCRATCH=""
@@ -491,11 +557,12 @@ run_fast() {
       [ -d "$profile" ] || continue
       prefs="${profile}Adobe Premiere Pro Prefs"
 
-      # Drop the shortcuts into the Profile's Mac folder (where Premiere reads custom sets)
-      (cd "${profile}Mac" && curl -fsSL -O "https://raw.githubusercontent.com/lucuma13/load/main/src/data/$KYS_FILE")
+      # Drop the shortcuts into the Profile's Mac folder (where Premiere reads custom
+      # sets). Create it first: it only exists once the user has saved a custom set.
+      (mkdir -p "${profile}Mac" && cd "${profile}Mac" && curl -fsSL -O "https://raw.githubusercontent.com/lucuma13/load/main/src/data/$KYS_FILE")
 
       # Drop the workspaces into Layouts. Premiere auto-registers them on launch.
-      (cd "${profile}Layouts" && curl -fsSL -O "https://raw.githubusercontent.com/lucuma13/load/main/src/data/$WS_FILE_1")
+      (mkdir -p "${profile}Layouts" && cd "${profile}Layouts" && curl -fsSL -O "https://raw.githubusercontent.com/lucuma13/load/main/src/data/$WS_FILE_1")
       (cd "${profile}Layouts" && curl -fsSL -O "https://raw.githubusercontent.com/lucuma13/load/main/src/data/$WS_FILE_2")
       ws_name="$(premiere_workspace_name "${profile}Layouts/$WS_FILE_1")"
 
@@ -536,10 +603,26 @@ run_fast() {
 }
 
 run_slow() {
+  # Privilege split. Machine-wide installs (Homebrew packages, /Applications apps,
+  # ProVideoFormats) need admin/root; per-user config (Finder, uv tools, Downloads
+  # sort) must run as the current account. An admin does both here. A standard user
+  # can't sudo, so it hands the machine-wide phase to an admin via `su` and then does
+  # its own per-user phase; if no admin is available it configures the user only.
+  local DO_MACHINE=false DO_USER=true
+  if $MACHINE_ONLY; then
+    DO_MACHINE=true # this is the admin sub-run: machine-wide steps only
+    DO_USER=false
+  elif $IS_ADMIN; then
+    DO_MACHINE=true # admin account: sudo works, do everything in this process
+  else
+    run_machine_via_admin ||
+      would_skip "Machine-wide installs skipped — no admin account available (configuring this user only)"
+  fi
+
   # Command Line Tools (provides git/python3; required by Homebrew). Without this,
   # a fresh Mac triggers the Xcode CLT dialog mid-run and aborts; we pop the
   # installer and wait for it to finish.
-  if ! xcode-select -p &>/dev/null; then
+  if $DO_MACHINE && ! xcode-select -p &>/dev/null; then
     echo "  Installing Command Line Tools… (Accept the dialog - this can take a few minutes)…"
     xcode-select --install &>/dev/null || true
     # The installer window opens behind the terminal, so nudge it to the front
@@ -553,7 +636,7 @@ run_slow() {
   # Finder "Calculate all sizes" — a nested plist key defaults(1) can't reach, so
   # we edit it with python3. Quit Finder first so it doesn't rewrite the plist on
   # exit and clobber the edit.
-  if command -v python3 &>/dev/null; then
+  if $DO_USER && command -v python3 &>/dev/null; then
     osascript -e 'tell application "Finder" to quit'
     sleep 2
     plutil -convert xml1 ~/Library/Preferences/com.apple.finder.plist
@@ -576,12 +659,12 @@ plistlib.dump(p,open(path,'wb'))
 "
     sleep 1
     open -a Finder
-  else
+  elif $DO_USER; then
     echo "  ⚠️  Finder 'Calculate all sizes' skipped — python3 not available"
   fi
 
   # Homebrew — install it, or refresh it (update + cleanup) when already present.
-  if ! $BREW_OK; then
+  if $DO_MACHINE && ! $BREW_OK; then
     # Pre-authenticate so Homebrew's own installer (which needs sudo to set up
     # its prefix) doesn't prompt separately — its own `have_sudo_access` check
     # succeeds silently against an already-valid ticket.
@@ -594,42 +677,52 @@ plistlib.dump(p,open(path,'wb'))
     echo >>"$HOME/.zprofile"
     echo "$SHELLENV_LINE" >>"$HOME/.zprofile"
     eval "$("${PREFIX}/bin/brew" shellenv)"
+    BREW_RW=true # just installed under this user, so its prefix is ours to write
   fi
 
   # Ensure brew is in PATH even if already installed
   PREFIX="$(brew_prefix)"
   eval "$("${PREFIX}/bin/brew" shellenv)" 2>/dev/null || true
 
-  # Update a pre-existing Homebrew (but don't upgrade packages that are not ours).
-  if $BREW_OK; then
-    checking "Homebrew"
-    quiet_run brew update
-    quiet_run brew cleanup
-  fi
+  # Homebrew's prefix belongs to another account (a standard user on a shared Mac):
+  # packages are already installed machine-wide, so skip every mutating brew step and
+  # carry on with the per-user setup below (defaults, Premiere, per-user uv tools).
+  if $DO_MACHINE && $BREW_OK && ! $BREW_RW; then
+    would_skip "Homebrew is managed by another account — packages already installed machine-wide"
+  elif $DO_MACHINE; then
+    # Update a pre-existing Homebrew (but don't upgrade packages that are not ours).
+    if $BREW_OK; then
+      checking "Homebrew"
+      quiet_run brew update
+      quiet_run brew cleanup
+    fi
 
-  # Core managed packages. Skip the MediaInfo GUI cask only when a MediaInfo.app is
-  # present but NOT brew-managed (e.g. the better-integrated App Store build) — don't
-  # override or adopt it.
-  checking "core packages"
-  quiet_run brew install --adopt $CORE_FORMULAE
-  local core_casks="" core_casks_preexisting=""
-  for cask in $CORE_CASKS; do
-    [ "$cask" = mediainfo ] && mediainfo_gui_external && continue
-    core_casks="$core_casks $cask"
-    cask_installed "$cask" && core_casks_preexisting="$core_casks_preexisting $cask"
-  done
-  # install --adopt brings in anything missing; upgrade --greedy then updates
-  # only the casks that were ALREADY installed before this run. A cask adopted
-  # moments ago above is already at the latest version, so greedy-checking it
-  # again is redundant work — and for a pkg-based cask (e.g.
-  # adobe-acrobat-reader) it's a second separate `brew` process, which
-  # re-authenticates sudo on every invocation and can prompt for the password
-  # a second time in a row for no actual gain.
-  quiet_run brew install --cask --adopt $core_casks
-  [ -n "$core_casks_preexisting" ] && quiet_run brew upgrade --cask --greedy $core_casks_preexisting
+    # Core managed packages. Skip the MediaInfo GUI cask only when a MediaInfo.app is
+    # present but NOT brew-managed (e.g. the better-integrated App Store build) — don't
+    # override or adopt it.
+    checking "core packages"
+    quiet_run brew install --adopt $CORE_FORMULAE
+    local core_casks="" core_casks_preexisting=""
+    for cask in $CORE_CASKS; do
+      [ "$cask" = mediainfo ] && mediainfo_gui_external && continue
+      core_casks="$core_casks $cask"
+      cask_installed "$cask" && core_casks_preexisting="$core_casks_preexisting $cask"
+    done
+    # install --adopt brings in anything missing; upgrade --greedy then updates
+    # only the casks that were ALREADY installed before this run. A cask adopted
+    # moments ago above is already at the latest version, so greedy-checking it
+    # again is redundant work — and for a pkg-based cask (e.g.
+    # adobe-acrobat-reader) it's a second separate `brew` process, which
+    # re-authenticates sudo on every invocation and can prompt for the password
+    # a second time in a row for no actual gain.
+    quiet_run brew install --cask --adopt $core_casks
+    [ -n "$core_casks_preexisting" ] && quiet_run brew upgrade --cask --greedy $core_casks_preexisting
+  fi
   # --quiet drops uv's resolve/install progress on success but still prints errors.
-  checking "uv tools"
-  for pkg in $CORE_UV; do uv tool install "$pkg" --upgrade --quiet; done
+  if $DO_USER; then
+    checking "uv tools"
+    for pkg in $CORE_UV; do uv tool install "$pkg" --upgrade --quiet; done
+  fi
 
   # Ensure uv-installed CLI tools (~/.local/bin) are on PATH. `uv tool
   # update-shell` detects the active shell and updates the right profile (safer
@@ -648,7 +741,7 @@ plistlib.dump(p,open(path,'wb'))
   # above). Finder buffers .DS_Store in memory and rewrites it on quit, so we write
   # while Finder is quit, then relaunch. Fully guarded: missing uv, no network or an
   # unreadable/odd store just prints a note and the run continues.
-  if command -v uvx &>/dev/null; then
+  if $DO_USER && command -v uvx &>/dev/null; then
     osascript -e 'tell application "Finder" to quit' 2>/dev/null || true
     sleep 2
     uvx --from ds-store python3 - <<'PY' 2>/dev/null || echo "  ⚠️  Downloads sort skipped (couldn't update .DS_Store)"
@@ -712,7 +805,7 @@ PY
   fi
 
   # Full-only managed packages
-  if $FULL; then
+  if $DO_MACHINE && $FULL && $BREW_RW; then
     checking "extra packages"
     local full_casks_preexisting=""
     for cask in $FULL_CASKS; do
@@ -733,7 +826,7 @@ PY
   # work above would just get silently wiped before we ever needed it. Nothing
   # below this point calls `brew` again, so one prompt here covers every
   # privileged step below it (kept alive across slow downloads just in case).
-  if $PREMIERE_OK || ! $PVF_OK; then
+  if $DO_MACHINE && { $PREMIERE_MACHINE || ! $PVF_OK; }; then
     sudo -v
     while true; do
       sudo -n true || true
@@ -743,13 +836,13 @@ PY
   fi
 
   # Every installer below downloads into the work dir; create it once up front.
-  mkdir -p "$WORKDIR"
+  $DO_MACHINE && mkdir -p "$WORKDIR"
 
   # Premiere plugins — Mister Horse's Product Manager installs & updates Animation
   # Composer (and the other Mister Horse plugins) into Premiere/After Effects. We
   # download the Product Manager installer and run it; Animation Composer itself is
   # then installed from within the app on first launch.
-  if $PREMIERE_OK; then
+  if $DO_MACHINE && $PREMIERE_MACHINE; then
     checking "plugins"
     PM_DMG="$WORKDIR/MisterHorseProductManager.dmg"
     curl -fsSL -o "$PM_DMG" "https://misterhorse.com/downloads/product-manager/osx"
@@ -805,7 +898,7 @@ APPLESCRIPT
   fi
 
   # Pro Video Formats
-  if ! $PVF_OK; then
+  if $DO_MACHINE && ! $PVF_OK; then
     DMG_URL="https://updates.cdn-apple.com/2026/macos/072-84099-20260127-5022F0FE-82CF-44E9-B96D-430E73501EBA/ProVideoFormats.dmg"
     DMG_PATH="$WORKDIR/ProVideoFormats.dmg"
 
@@ -860,6 +953,13 @@ main() {
   fi
 
   if $RUN_SLOW; then run_slow; fi
+
+  # The admin sub-run is one phase of the caller's run — it prints its own progress;
+  # the caller shows the summary. Don't print a second checklist/restart notice here.
+  if $MACHINE_ONLY; then
+    echo "  ✅  Machine-wide install complete."
+    return 0
+  fi
 
   # Summary
   checklist
