@@ -1,16 +1,6 @@
 ---
 version: 2
 updates:
-  - package-ecosystem: "npm"
-    directory: "/"
-    schedule:
-      interval: "weekly"
-    cooldown:
-      default-days: 7
-    groups:
-      bats:
-        patterns:
-          - "bats*"
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
@@ -18,7 +8,7 @@ updates:
     cooldown:
       default-days: 7
     groups:
-      actions:
+      actions-dependencies:
         patterns:
           - "*"
   - package-ecosystem: "pre-commit"
@@ -31,3 +21,13 @@ updates:
       pre-commit-dependencies:
         patterns:
           - "*"
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    groups:
+      bats:
+        patterns:
+          - "bats*"
