@@ -2,11 +2,11 @@
 # Payload data and byte-exact test fixtures must never be reformatted.
 exclude: |
   (?x)^(
-    src/data/.*|
     tests/fixtures/.*|
+    src/data/.*
   )$
 repos:
-  # Pre-commit config sanity
+  # Pre-commit configuration checks
   - repo: meta
     hooks:
       - id: check-hooks-apply
@@ -18,19 +18,47 @@ repos:
       - id: check-added-large-files
       - id: check-case-conflict
       - id: check-merge-conflict
-      - id: check-executables-have-shebangs
-      - id: check-shebang-scripts-are-executable
       - id: end-of-file-fixer
       - id: mixed-line-ending
         args: [--fix=lf]
       - id: trailing-whitespace
         exclude: \.md$
+      - id: check-executables-have-shebangs
+      - id: check-shebang-scripts-are-executable
   # Spellcheck
   - repo: https://github.com/crate-ci/typos
-    rev: v1.48.0 # pin to a concrete release; v1 is a mutable rolling tag
+    rev: v1.48.0
     hooks:
       - id: typos
         args: [--force-exclude] # Flag only: removed default --write-changes
+  # YAML formatter
+  - repo: https://github.com/google/yamlfmt
+    rev: v0.21.0
+    hooks:
+      - id: yamlfmt
+        args: ["-formatter", "include_document_start=true,line_length=120"]
+  # YAML linter
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.38.0
+    hooks:
+      - id: yamllint
+        args:
+          - --config-data
+          # line-length is a warning, not an error: the powershell stack's `entry:`
+          # one-liners cannot be broken under 120 chars. truthy.check-keys is off
+          # so a workflow may write `on:` unquoted.
+          - "{extends: default, rules: {line-length: {max: 120, level: warning}, comments: {min-spaces-from-content: 1}, truthy: {check-keys: false}}}"
+  # GitHub workflow schema validation
+  - repo: https://github.com/python-jsonschema/check-jsonschema
+    rev: 0.37.4
+    hooks:
+      - id: check-github-workflows
+        args: ["--verbose"]
+  # CI security auditing
+  - repo: https://github.com/zizmorcore/zizmor-pre-commit
+    rev: v1.26.1
+    hooks:
+      - id: zizmor
   # Bash formatter
   - repo: https://github.com/scop/pre-commit-shfmt
     rev: v3.13.1-1
@@ -41,8 +69,8 @@ repos:
     rev: v0.11.0.1
     hooks:
       - id: shellcheck
-        # .bats test files use bats syntax + source load-mac.sh dynamically;
-        # they're checked by the bats runner, not shellcheck (matches `make lint`).
+        # .bats test files use bats syntax + source the shell entrypoint
+        # dynamically; they're checked by the bats runner, not shellcheck.
         exclude: \.bats$
   # PowerShell formatter + linter
   - repo: local
@@ -59,28 +87,3 @@ repos:
         entry: "pwsh -NoProfile -Command '$f = Invoke-ScriptAnalyzer -Path src -Recurse -Settings ./PSScriptAnalyzerSettings.psd1 -Severity Information,Warning,Error; $f += Invoke-ScriptAnalyzer -Path tests -Recurse -Settings ./PSScriptAnalyzerSettings.psd1 -Severity Information,Warning,Error -ExcludeRule PSUseDeclaredVarsMoreThanAssignments; if ($f) { $f | Format-Table RuleName,Severity,ScriptName,Line,Message -AutoSize -Wrap; exit 1 }'"
         files: \.ps1$
         pass_filenames: false
-  # YAML formatter
-  - repo: https://github.com/google/yamlfmt
-    rev: v0.21.0
-    hooks:
-      - id: yamlfmt
-        args: ["-formatter", "include_document_start=true,line_length=120"]
-  # YAML linter
-  - repo: https://github.com/adrienverge/yamllint
-    rev: v1.38.0
-    hooks:
-      - id: yamllint
-        args:
-          - --config-data
-          - "{extends: default, rules: {line-length: {max: 120, level: warning}, comments: {min-spaces-from-content: 1}}}"
-  # GitHub workflow schema validation
-  - repo: https://github.com/python-jsonschema/check-jsonschema
-    rev: 0.37.3
-    hooks:
-      - id: check-github-workflows
-        args: ["--verbose"]
-  # CI security audit
-  - repo: https://github.com/zizmorcore/zizmor-pre-commit
-    rev: v1.26.1
-    hooks:
-      - id: zizmor
