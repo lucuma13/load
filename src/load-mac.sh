@@ -1013,7 +1013,7 @@ main() {
     printf ""
     printf '%s' "
 
-  ▶️  Fast loading is complete. Press (y) or enter to continue on FULL mode " >&3
+  ▶️  Fast loading is complete. Press (y) or Enter to continue on FULL mode " >&3
     # A single keypress: y/Y continues without enter, and enter alone (an empty
     # read) continues too. Anything else is ignored so a stray key can't skip
     # the Full pass. A failed read (no tty) falls through rather than spinning.
