@@ -972,11 +972,11 @@ APPLESCRIPT
     DMG_PATH="$WORKDIR/ProVideoFormats.dmg"
 
     if [ ! -f "$DMG_PATH" ]; then
-      curl -o "$DMG_PATH" "$DMG_URL"
+      curl -fsSL -o "$DMG_PATH" "$DMG_URL"
     fi
 
-    hdiutil attach "$DMG_PATH" -nobrowse
-    sudo installer -pkg "/Volumes/Pro Video Formats/ProVideoFormats.pkg" -target /
+    hdiutil attach "$DMG_PATH" -nobrowse -quiet
+    quiet_run sudo installer -pkg "/Volumes/Pro Video Formats/ProVideoFormats.pkg" -target /
     hdiutil detach "/Volumes/Pro Video Formats" -quiet
     rm -f "$DMG_PATH"
   fi
