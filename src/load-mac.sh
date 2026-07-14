@@ -1013,8 +1013,15 @@ main() {
     printf ""
     printf '%s' "
 
-  ▶️  Fast loading is complete. Press enter to continue on FULL mode " >&3
-    read -r _ <&3 || true
+  ▶️  Fast loading is complete. Press (y) or enter to continue on FULL mode " >&3
+    # A single keypress: y/Y continues without enter, and enter alone (an empty
+    # read) continues too. Anything else is ignored so a stray key can't skip
+    # the Full pass. A failed read (no tty) falls through rather than spinning.
+    while read -rsn1 key <&3; do
+      case "$key" in
+      "" | y | Y) break ;;
+      esac
+    done
     echo ""
     exec 3>&-
     FAST=false
