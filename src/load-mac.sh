@@ -81,11 +81,11 @@ quiet_run() {
   return "$rc"
 }
 
-# cask_soft <brew cask cmd…> — run a cask op non-fatally so one failure can't abort
-# the machine phase (the plugins and ProVideoFormats after it still run). quiet_run
+# soft_run <brew cmd…> — run a brew op non-fatally so one failure can't abort the
+# machine phase (the plugins and ProVideoFormats after it still run). quiet_run
 # still surfaces brew's own output on a genuine failure; we just don't editorialise.
 # Always returns 0.
-cask_soft() { quiet_run "$@" || true; }
+soft_run() { quiet_run "$@" || true; }
 
 # install_casks <cask…> — install/adopt casks, bringing any that already exist up to
 # the cask's latest version. Fast path: one batched `--adopt` (installs what's
@@ -105,9 +105,9 @@ install_casks() {
     # Already-current casks re-adopt as silent no-ops; a different existing version
     # makes --adopt fail (silently), so replace it with the cask's latest via --force.
     # Adopt-and-upgrade is our default, so a conflict resolves quietly; only a genuine
-    # --force failure prints (via cask_soft's quiet_run).
+    # --force failure prints (via soft_run's quiet_run).
     brew install --cask --adopt "$c" &>/dev/null && continue
-    cask_soft brew install --cask --force "$c"
+    soft_run brew install --cask --force "$c"
   done
 }
 
@@ -728,11 +728,16 @@ plistlib.dump(p,open(path,'wb'))
   if $DO_MACHINE && $BREW_OK && ! $BREW_RW; then
     would_skip "Homebrew is managed by another account — packages already installed machine-wide"
   elif $DO_MACHINE; then
-    # Update a pre-existing Homebrew (but don't upgrade packages that are not ours).
+    # Update a pre-existing Homebrew (but don't upgrade packages that are not
+    # ours). A bare `brew cleanup` evaluates EVERY installed package, and
+    # Homebrew >=6 refuses to load one from a third-party tap the user hasn't
+    # `brew trust`ed — someone else's tap would then fail the run. So we name
+    # clean-up only our packages, any we name that aren't installed are a silent
+    # no-op (housekeeping, so never fatal).
     if $BREW_OK; then
       checking "Homebrew"
-      quiet_run brew update
-      quiet_run brew cleanup
+      soft_run brew update
+      soft_run brew cleanup $CORE_FORMULAE $CORE_CASKS $FULL_CASKS
     fi
 
     # Core managed packages. Skip the MediaInfo GUI cask only when a MediaInfo.app is
@@ -754,7 +759,7 @@ plistlib.dump(p,open(path,'wb'))
     # re-authenticates sudo on every invocation and can prompt for the password
     # a second time in a row for no actual gain.
     install_casks $core_casks
-    [ -n "$core_casks_preexisting" ] && cask_soft brew upgrade --cask --greedy $core_casks_preexisting
+    [ -n "$core_casks_preexisting" ] && soft_run brew upgrade --cask --greedy $core_casks_preexisting
   fi
   # --quiet drops uv's resolve/install progress on success but still prints errors.
   # All of this is per-user: the tools install into ~/.local and update-shell writes
@@ -854,7 +859,7 @@ PY
     # version, and re-checking them is a second `brew` process that can
     # re-prompt for sudo on pkg-based casks like adobe-acrobat-reader.
     install_casks $FULL_CASKS
-    [ -n "$full_casks_preexisting" ] && cask_soft brew upgrade --cask --greedy $full_casks_preexisting
+    [ -n "$full_casks_preexisting" ] && soft_run brew upgrade --cask --greedy $full_casks_preexisting
   fi
 
   # Cache sudo credentials right here — not at the top of this function — because
