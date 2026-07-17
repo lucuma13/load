@@ -66,9 +66,7 @@ repos:
     rev: v0.11.0.1
     hooks:
       - id: shellcheck
-        # .bats test files use bats syntax + source the shell entrypoint
-        # dynamically; they're checked by the bats runner, not shellcheck.
-        exclude: \.bats$
+        exclude_types: [bats]
   # PowerShell formatter + linter
   - repo: local
     hooks:
