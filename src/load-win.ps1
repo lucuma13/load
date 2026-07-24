@@ -341,15 +341,23 @@ function Test-UvInstalled($pkg) {
     return [bool]((& $uv tool list 2>$null) -match "^$pkg")
 }
 
+# Get-RegValue <path> <name> - the value, or $null when the key or the value is
+# absent. Strict mode makes a missing property an error rather than $null, so ask
+# for the value by name instead of reading the whole key and dotting into it.
+function Get-RegValue($path, $name) {
+    (Get-ItemProperty -LiteralPath $path -Name $name -ErrorAction SilentlyContinue).$name
+}
+
 # Test-AppInstalled <pattern> - true if any Windows uninstall entry's DisplayName
-# matches <pattern> (per-machine 64- and 32-bit, plus per-user).
+# matches <pattern> (per-machine 64- and 32-bit, plus per-user). Plenty of entries
+# carry no DisplayName at all, so -Name filters them out before the match runs.
 function Test-AppInstalled($pattern) {
     foreach ($key in @(
             "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
             "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*",
             "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*"
         )) {
-        if (Get-ItemProperty $key -ErrorAction SilentlyContinue |
+        if (Get-ItemProperty $key -Name DisplayName -ErrorAction SilentlyContinue |
                 Where-Object { $_.DisplayName -match $pattern }) { return $true }
     }
     return $false
@@ -389,8 +397,9 @@ function Show-Checklist {
     $kbDelay = (Get-ItemProperty "HKCU:\Control Panel\Keyboard" -Name "KeyboardDelay" -ErrorAction SilentlyContinue).KeyboardDelay
     $kbOk = ($kbSpeed -eq "31") -and ($kbDelay -eq "0")
     # Input-language / keyboard-layout switch hotkeys disabled ("3" = Not Assigned).
-    $toggle = Get-ItemProperty "HKCU:\Keyboard Layout\Toggle" -ErrorAction SilentlyContinue
-    $togglesOk = $toggle -and $toggle.Hotkey -eq "3" -and $toggle.'Language Hotkey' -eq "3" -and $toggle.'Layout Hotkey' -eq "3"
+    # A fresh profile can be missing any of the three values, hence the named reads.
+    $toggle = "HKCU:\Keyboard Layout\Toggle"
+    $togglesOk = ((Get-RegValue $toggle 'Hotkey') -eq "3") -and ((Get-RegValue $toggle 'Language Hotkey') -eq "3") -and ((Get-RegValue $toggle 'Layout Hotkey') -eq "3")
     $sysOk = $kbOk -and $togglesOk
     $premiereRunning = $PREMIERE_OK -and ($null -ne (Get-Process -Name "Adobe Premiere Pro*" -ErrorAction SilentlyContinue))
     $ahkActive = Test-Path $AhkScript
