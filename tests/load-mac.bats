@@ -336,7 +336,7 @@ link_status() {
 @test "all brew casks resolve (rename/delisting/typo guard)" {
   command -v brew >/dev/null || skip "Homebrew not installed"
   local bad=()
-  for c in $CORE_CASKS $FULL_CASKS; do
+  for c in $CORE_CASKS $FULL_CASKS $PREMIERE_CASKS; do
     brew info --cask "$c" &>/dev/null || bad+=("$c")
   done
   [ ${#bad[@]} -eq 0 ] || fail "unknown casks: ${bad[*]}"

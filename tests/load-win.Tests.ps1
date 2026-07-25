@@ -128,7 +128,7 @@ Describe "winget package ids resolve" -Tag 'Live' {
         $env:LOAD_LIB = "1"
         . "$PSScriptRoot\..\src\load-win.ps1"
         $env:LOAD_LIB = $null
-        $script:wingetIds = @($CORE_PKGS + $FULL_PKGS)
+        $script:wingetIds = @($CORE_PKGS + $FULL_PKGS + $PREMIERE_PKGS)
     }
 
     It "<_> is found on winget" -ForEach $wingetIds {
@@ -217,7 +217,7 @@ Describe "Default-app / package-list consistency" {
         $env:LOAD_LIB = "1"
         . "$PSScriptRoot\..\src\load-win.ps1"
         $env:LOAD_LIB = $null
-        $allPkgs = @($CORE_PKGS + $FULL_PKGS)
+        $allPkgs = @($CORE_PKGS + $FULL_PKGS + $PREMIERE_PKGS)
         $script:defaultAppIds = @($DEFAULT_APPS | ForEach-Object {
                 @{ Id = $_.WingetId; InList = ($allPkgs -contains $_.WingetId) } })
         $script:aliasIds = @($allPkgs | ForEach-Object {

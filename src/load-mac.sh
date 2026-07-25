@@ -282,6 +282,7 @@ CORE_FORMULAE="media-info exiftool ffmpeg uv"
 CORE_CASKS="vlc caffeine mediainfo"
 CORE_UV="triplecheck mhl-suite"
 FULL_CASKS="google-chrome adobe-acrobat-reader audacity mediahuman-audio-converter appcleaner"
+PREMIERE_CASKS="lucuma13/dit/prem-down"
 
 # Friendly display names for the brew/uv ids (used by the checklist). Anything
 # without a mapping passes through unchanged (uv tool names are already
@@ -298,6 +299,7 @@ pkg_alias() {
   adobe-acrobat-reader) echo "Adobe Acrobat Reader" ;;
   audacity) echo "Audacity" ;;
   appcleaner) echo "AppCleaner" ;;
+  lucuma13/dit/prem-down) echo "prem-down" ;;
   *) echo "$1" ;;
   esac
 }
@@ -454,6 +456,14 @@ flickerfree_installed() {
   find "/Library/Application Support/Adobe/Common/Plug-ins" -iname "*flicker*free*" -print -quit 2>/dev/null | grep -q .
 }
 
+# premdown_pkg_copy — true when prem-down's standalone .pkg build is on the
+# machine: it writes a REGULAR FILE to /usr/local/bin/prem-down, whereas the
+# cask symlinks into the Homebrew prefix. Deliberately not `command -v` and not
+# cask_installed — the regular-file-vs-symlink distinction is the whole point
+# (see the adoption step in run_slow), and on an Intel Mac, where the prefix IS
+# /usr/local, the two builds land on the very same path.
+premdown_pkg_copy() { [ -f /usr/local/bin/prem-down ] && [ ! -L /usr/local/bin/prem-down ]; }
+
 # mediainfo_gui_external — true when a MediaInfo.app is present but NOT managed
 # by Homebrew, i.e. installed another way (e.g. the better-integrated Mac App
 # Store build; the cask and the App Store build share the same /Applications
@@ -540,6 +550,13 @@ checklist() {
     if ! $FAST; then
       if flickerfree_installed; then apps_done="$apps_done, Flicker Free"; else apps_todo="$apps_todo, Flicker Free"; fi
     fi
+    for pkg in $PREMIERE_CASKS; do
+      name="$(pkg_alias "$pkg")"
+      apps_all="$apps_all, $name"
+      if ! $FAST; then
+        if cask_installed "${pkg##*/}"; then apps_done="$apps_done, $name"; else apps_todo="$apps_todo, $name"; fi
+      fi
+    done
   fi
   for pkg in $CORE_UV; do
     name="$(pkg_alias "$pkg")"
@@ -769,7 +786,9 @@ plistlib.dump(p,open(path,'wb'))
     if $BREW_OK; then
       checking "Homebrew"
       soft_run brew update
-      soft_run brew cleanup $CORE_FORMULAE $CORE_CASKS $FULL_CASKS
+      local cleanup_pkgs="$CORE_FORMULAE $CORE_CASKS $FULL_CASKS"
+      cask_installed prem-down && cleanup_pkgs="$cleanup_pkgs $PREMIERE_CASKS"
+      soft_run brew cleanup $cleanup_pkgs
     fi
 
     # Core managed packages. Skip the MediaInfo GUI cask only when a
@@ -792,6 +811,22 @@ plistlib.dump(p,open(path,'wb'))
     # a second time in a row for no actual gain.
     install_casks $core_casks
     [ -n "$core_casks_preexisting" ] && soft_run brew upgrade --cask --greedy $core_casks_preexisting
+
+    # Premiere Pro add-ons — machine-wide and gated on Premiere being installed,
+    # exactly like the plugins further down.
+    if $PREMIERE_MACHINE; then
+      checking "Premiere Pro utilities"
+      if premdown_pkg_copy; then
+        would_run "Adopting the standalone prem-down install into Homebrew"
+        sudo rm -f /usr/local/bin/prem-down || true
+      fi
+      local premiere_casks_preexisting=""
+      for cask in $PREMIERE_CASKS; do
+        cask_installed "${cask##*/}" && premiere_casks_preexisting="$premiere_casks_preexisting $cask"
+      done
+      install_casks $PREMIERE_CASKS
+      [ -n "$premiere_casks_preexisting" ] && soft_run brew upgrade --cask $premiere_casks_preexisting
+    fi
   fi
   # --quiet drops uv's resolve/install progress on success but still prints
   # errors. All of this is per-user: the tools install into ~/.local and

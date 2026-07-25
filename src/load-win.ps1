@@ -253,6 +253,11 @@ $CORE_UV = @(
     "triplecheck",
     "mhl-suite"
 )
+# Premiere Pro add-ons - installed only when Premiere is on the machine,
+# alongside the plugins.
+$PREMIERE_PKGS = @(
+    "lucuma13.prem-down"
+)
 
 # Friendly display names for the winget ids (uv tools are already friendly).
 $PKG_ALIAS = @{
@@ -267,6 +272,7 @@ $PKG_ALIAS = @{
     "Google.Chrome"               = "Google Chrome"
     "Adobe.Acrobat.Reader.64-bit" = "Adobe Acrobat Reader"
     "Audacity.Audacity"           = "Audacity"
+    "lucuma13.prem-down"          = "prem-down"
 }
 function Get-PkgAlias($id) { if ($PKG_ALIAS.ContainsKey($id)) { $PKG_ALIAS[$id] } else { $id } }
 
@@ -504,6 +510,7 @@ function Show-Checklist {
     if ($PREMIERE_OK) {
         $apps += @{ name = "Mister Horse"; ok = (Test-MisterHorseInstalled) }
         $apps += @{ name = "Flicker Free"; ok = (Test-FlickerFreeInstalled) }
+        foreach ($pkg in $PREMIERE_PKGS) { $apps += @{ name = (Get-PkgAlias $pkg); ok = (Test-WingetInstalled $pkg) } }
     }
     foreach ($pkg in $CORE_UV) { $apps += @{ name = $pkg; ok = (Test-UvInstalled $pkg) } }
 
@@ -766,6 +773,7 @@ function Invoke-ElevatedInstall {
     if ($WINGET_OK) {
         $ids = @($CORE_PKGS | Where-Object { $_ -ne $UV_PKG })
         if ($FULL) { $ids += $FULL_PKGS }
+        if ($PREMIERE_OK) { $ids += $PREMIERE_PKGS }
         foreach ($id in $ids) {
             if (Test-WingetInstalled $id) {
                 $cmds += "winget upgrade --id $id --exact --silent --accept-package-agreements --accept-source-agreements"
