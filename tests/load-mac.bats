@@ -41,6 +41,11 @@ teardown() {
 }
 
 # Copy the given version's prefs fixture into the per-test temp file.
+#
+# The prefs fixtures are LF, and that is a faithful capture on BOTH platforms -
+# Premiere writes this file LF even on Windows (unlike UserWorkspace*.xml, which
+# is CRLF there). Do not "fix" them to CRLF to match the workspace fixtures; the
+# two files genuinely differ. See set_pref_node in load-mac.sh.
 copy_prefs() { cp "$DIR/fixtures/$1/Adobe Premiere Pro Prefs_truncated" "$PREFS"; }
 
 @test "shortcut set is activated" {
@@ -207,6 +212,21 @@ timeline_nodes() {
   assert_output --partial '<x>new</x>'
 }
 
+# Guards the EOL-preserving contract documented on set_pref_node: the perl edit
+# substitutes within a line and must leave the record separators alone. A CRLF file
+# is the shape a normalising rewrite would visibly destroy, so it is what we assert
+# on - it also shows the installer can't be what re-ended a synced Windows prefs.
+@test "set_pref_node preserves the file's line endings" {
+  printf '<root>\r\n<x>old</x>\r\n</root>\r\n' >"$PREFS"
+  run set_pref_node "$PREFS" "x" "new"
+  assert_success
+  # Every ending still CRLF, and the value did change.
+  run perl -0777 -ne 'my $crlf=()=/\r\n/g; my $bare=()=/(?<!\r)\n/g; print "crlf=$crlf bare=$bare"' "$PREFS"
+  assert_output 'crlf=3 bare=0'
+  run grep -c '<x>new</x>' "$PREFS"
+  assert_success
+}
+
 @test "set_pref_node fails and leaves the file untouched when the node is absent" {
   printf '<root><x>old</x></root>' >"$PREFS"
   cp "$PREFS" "$PREFS.orig"
@@ -231,6 +251,23 @@ timeline_nodes() {
 @test "premiere_workspace_name extracts the UserName" {
   for v in "${PREMIERE_VERSIONS[@]}"; do
     run premiere_workspace_name "$DIR/fixtures/$v/UserWorkspace_truncated.xml"
+    assert_output 'LGG - Single monitor'
+  done
+}
+
+# The fixtures are LF because that is what Premiere authors on macOS, but the
+same                # file is pure CRLF when Premiere authors it on Windows. A surviving \r
+would be            # written verbatim into the prefs, so the name must come back
+byte-identical from # both shapes. Derived from the LF fixture so the two can
+never drift apart.
+@test "premiere_workspace_name is line-ending agnostic (CRLF workspace)" {
+  for v in "${PREMIERE_VERSIONS[@]}"; do
+    crlf="$BATS_TEST_TMPDIR/ws_crlf_$v.xml"
+    perl -pe 's/\n/\r\n/' "$DIR/fixtures/$v/UserWorkspace_truncated.xml" >"$crlf"
+    # Guard: the conversion actually produced CRLF, so this can't pass vacuously.
+    run grep -c $'\r$' "$crlf"
+    assert_success
+    run premiere_workspace_name "$crlf"
     assert_output 'LGG - Single monitor'
   done
 }

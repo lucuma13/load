@@ -37,8 +37,15 @@ $TimelineNodes = & {
 
 # Resolved at discovery time so -Skip can see them. The WOW64 registry test needs a
 # 32-bit host to read from and elevation to plant a 64-bit-only entry to read.
+#
+# WindowsIdentity::GetCurrent() THROWS on non-Windows, and at discovery scope that
+# aborts the whole file (0 tests collected) - so it must stay behind the host check
+# for the platform-agnostic tests here to run on macOS/Linux. $IsWindows only exists
+# on PowerShell 6+; on 5.1 it is undefined, hence the Test-Path rather than a bare
+# truthiness check, which would otherwise read as "not Windows" on the 5.1 target.
+$IsWindowsHost = (-not (Test-Path Variable:IsWindows)) -or $IsWindows
 $Ps32Available = Test-Path "$env:WINDIR\SysWOW64\WindowsPowerShell\v1.0\powershell.exe"
-$IsElevatedHost = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()
+$IsElevatedHost = $IsWindowsHost -and ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()
 ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
 # PSScriptAnalyzer's PSUseCompatibleSyntax rule flags any 7+-only syntax (??
@@ -273,7 +280,7 @@ Describe "Constrained Language Mode resilience" {
     # End-to-end smoke: a --dry-run (preview + full checklist) must complete under CLM
     # without a language-mode violation. Windows-only - the checklist reads HKCU/HKLM,
     # which don't exist on other platforms.
-    It "a --dry-run completes under Constrained Language Mode" -Skip:(-not $IsWindows) {
+    It "a --dry-run completes under Constrained Language Mode" -Skip:(-not $IsWindowsHost) {
         $errFile = Join-Path $TestDrive "clm-dryrun.err"
         $cmd = "`$ExecutionContext.SessionState.LanguageMode='ConstrainedLanguage'; & '$srcPath' --dry-run"
         & pwsh -NoProfile -Command $cmd 1> $null 2> $errFile
@@ -376,6 +383,10 @@ Describe "fast mode requests no elevation (no UAC)" {
 # these run against every captured version.
 Describe "Set-PremierePro (Premiere <Version>)" -ForEach $PremiereVersions {
     BeforeEach {
+        # The prefs fixtures are LF and that is faithful ON WINDOWS TOO: Premiere
+        # writes this file LF on both platforms, unlike UserWorkspace*.xml which is
+        # CRLF here. So this fixture is not a macOS-capture artefact to be corrected
+        # - see the serialiser split on ConvertTo-CrlfFile in load-win.ps1.
         $fixture = "$PSScriptRoot\fixtures\$Dir\Adobe Premiere Pro Prefs_truncated"
         $prefs = Join-Path $TestDrive "prefs"
         Copy-Item $fixture $prefs
@@ -453,6 +464,72 @@ Describe "Get-WorkspaceName (Premiere <Version>)" -ForEach $PremiereVersions {
         $ws = "$PSScriptRoot/fixtures/$Dir/UserWorkspace_truncated.xml"
         Get-WorkspaceName $ws | Should -Be 'LGG - Single monitor'
     }
+
+    # The fixtures are LF (macOS default), but every real UserWorkspace*.xml on
+    # Windows is pure CRLF - so on this platform the LF fixture is the shape we
+    # DON'T meet in production. Assert the CRLF shape too, and that no \r leaks
+    # into the name: it gets copied into the prefs as element text, so the
+    # extractor must return the field and nothing else, whatever EOLs the
+    # surrounding file uses.
+    It "extracts the UserName from a CRLF workspace" {
+        $lf = Get-Content -LiteralPath "$PSScriptRoot/fixtures/$Dir/UserWorkspace_truncated.xml" -Raw
+        $crlf = Join-Path $TestDrive "ws_crlf_$Dir.xml"
+        [System.IO.File]::WriteAllText($crlf, ($lf -replace "`r?`n", "`r`n"))
+        # Guard: the conversion actually produced CRLF, so this can't pass vacuously.
+        [System.IO.File]::ReadAllText($crlf) | Should -Match "`r`n"
+
+        $name = Get-WorkspaceName $crlf
+        $name | Should -Be 'LGG - Single monitor'
+        $name | Should -Not -Match "`r"
+    }
+}
+
+# The workspace payload ships LF (one source of truth in the repo) but Premiere
+# authors these CRLF on Windows, so the installer re-ends them on delivery. Pure
+# .NET file I/O, so these run on any host - no Windows runner needed.
+Describe "ConvertTo-CrlfFile (Premiere <Version>)" -ForEach $PremiereVersions {
+    BeforeEach {
+        $script:src = "$PSScriptRoot/fixtures/$Dir/UserWorkspace_truncated.xml"
+        $script:target = Join-Path $TestDrive "convert_$Dir.xml"
+        Copy-Item -LiteralPath $script:src -Destination $script:target -Force
+    }
+
+    It "re-ends an LF payload as CRLF" {
+        # Guard: the fixture really is the LF shape this is meant to convert.
+        [System.IO.File]::ReadAllText($src) | Should -Not -Match "`r"
+
+        ConvertTo-CrlfFile $target
+        $out = [System.IO.File]::ReadAllText($target)
+        $out | Should -Match "`r`n"
+        # Every newline converted, none left bare.
+        ([regex]::Matches($out, "(?<!`r)`n")).Count | Should -Be 0
+    }
+
+    It "changes only the line endings" {
+        ConvertTo-CrlfFile $target
+        ([System.IO.File]::ReadAllText($target) -replace "`r`n", "`n") |
+            Should -BeExactly ([System.IO.File]::ReadAllText($src))
+    }
+
+    It "introduces no BOM" {
+        ConvertTo-CrlfFile $target
+        $bytes = [System.IO.File]::ReadAllBytes($target)
+        # EF BB BF would make Premiere's parser choke on the declaration.
+        @($bytes[0], $bytes[1], $bytes[2]) -join ',' | Should -Not -Be '239,187,191'
+        $bytes[0] | Should -Be ([byte][char]'<')
+    }
+
+    It "is idempotent - a second pass is byte-identical" {
+        ConvertTo-CrlfFile $target
+        $once = [System.IO.File]::ReadAllBytes($target)
+        ConvertTo-CrlfFile $target
+        [System.IO.File]::ReadAllBytes($target) | Should -Be $once
+    }
+
+    It "leaves the workspace name readable after conversion" {
+        ConvertTo-CrlfFile $target
+        Get-WorkspaceName $target | Should -Be 'LGG - Single monitor'
+    }
 }
 
 # Set-PrefNode is the engine under Set-PremierePro. Its "no edit = no corruption"
@@ -471,6 +548,21 @@ Describe "Set-PrefNode" {
         Get-Content $prefs -Raw | Should -Match '<x>new</x>'
     }
 
+    # Enforces the "do not reimplement with Set-Content/Out-File" note on Set-PrefNode:
+    # those would normalise the WHOLE file as a side effect of changing one value.
+    # Uses a CRLF file because that is the shape a normaliser would visibly destroy,
+    # and because it proves the installer cannot be what re-ended a user's prefs.
+    It "preserves the file's line endings" {
+        $enc = New-Object System.Text.UTF8Encoding $false
+        [System.IO.File]::WriteAllText($prefs, "<root>`r`n<x>old</x>`r`n</root>`r`n", $enc)
+
+        Set-PrefNode $prefs "x" "new" | Should -BeTrue
+
+        $out = [System.IO.File]::ReadAllText($prefs)
+        $out | Should -BeExactly "<root>`r`n<x>new</x>`r`n</root>`r`n"
+        ([regex]::Matches($out, "(?<!`r)`n")).Count | Should -Be 0 -Because 'no ending may be downgraded to a bare LF'
+    }
+
     It "returns false and leaves the file byte-for-byte untouched when the node is absent" {
         $before = (Get-FileHash $prefs -Algorithm SHA256).Hash
         Set-PrefNode $prefs "missing" "new" | Should -BeFalse
@@ -483,7 +575,9 @@ Describe "Set-PrefNode" {
 # per-machine 64-bit view, a per-machine 32-bit view and a per-user one, and a 32-bit
 # PowerShell host reads HKLM:\SOFTWARE through WOW64 redirection - both per-machine
 # provider paths collapse onto the 32-bit view - so the lookup has to name the view.
-Describe "Test-AppInstalled" {
+# Registry-backed end to end (HKCU: provider + reg.exe), so it is Windows-only:
+# skipped at Describe level because even the BeforeAll probe needs the HKCU drive.
+Describe "Test-AppInstalled" -Skip:(-not $IsWindowsHost) {
     BeforeAll {
         # A per-user entry needs no elevation and isn't WOW64-redirected, so it
         # exercises the reg.exe output parsing on any runner, elevated or not.
@@ -537,7 +631,9 @@ if (Test-AppInstalled '$name') { 'FOUND' } else { 'MISSING' }
 # Find-UvExe picks the uv that the uv-tool installs are invoked through. It has to
 # return exactly one path: an array is truthy, so it would skip the fallback list
 # below it, and it can't be invoked with & either.
-Describe "Find-UvExe" {
+# Resolves uv.exe through Windows PATH and winget shim layouts (';' separator,
+# %LOCALAPPDATA% shims), so the semantics under test only exist on Windows.
+Describe "Find-UvExe" -Skip:(-not $IsWindowsHost) {
     BeforeAll {
         function New-FakeUv($dir) {
             New-Item -ItemType Directory -Force -Path $dir | Out-Null

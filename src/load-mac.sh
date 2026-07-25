@@ -138,8 +138,12 @@ usage() {
 
 # premiere_workspace_name <workspace.xml> — echo the workspace display name,
 # stored inside the file under the UserName key.
+#
+# The file's line endings are NOT a platform invariant: Premiere authors these
+# LF on macOS but CRLF on Windows. awk's RS strips only the \n, so on a CRLF
+# file the \r survives into the returned name. Strip it.
 premiere_workspace_name() {
-  awk '/<key>UserName<\/key>/{getline; gsub(/<\/?ustring>/,""); print; exit}' "$1"
+  awk '/<key>UserName<\/key>/{getline; gsub(/\r|<\/?ustring>/,""); print; exit}' "$1"
 }
 
 # set_pref_node <prefs> <node> <value> — replace an XML leaf node's text in
@@ -147,6 +151,9 @@ premiere_workspace_name() {
 # regex/JSON specials. Returns 1 WITHOUT touching the file when the node is
 # absent, so callers can flag nodes a future Premiere version may have renamed
 # (no edit = no corruption).
+#
+# EOL-preserving: perl -pe substitutes WITHIN a line and rewrites the record
+# separator untouched, so the file's endings survive the edit.
 set_pref_node() {
   local prefs="$1" node="$2"
   grep -q "<$node>" "$prefs" || return 1
@@ -159,6 +166,10 @@ set_pref_node() {
 # (where Premiere hasn't written the node yet) must still be overridden. Returns
 # 1 without touching the file only when the <Properties> block can't be found.
 # Idempotent: once created, later runs find the node and edit it in place.
+#
+# The inserted "\n" below is the one place we author a line ending in the prefs,
+# and a bare LF is correct: Premiere writes this file LF on BOTH macOS and
+# Windows.
 force_pref_node() {
   local prefs="$1" node="$2"
   grep -q "<$node>" "$prefs" && {

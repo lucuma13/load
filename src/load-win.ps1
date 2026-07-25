@@ -79,9 +79,42 @@ function Get-WorkspaceName {
     return ""
 }
 
+# ConvertTo-CrlfFile <path> - rewrite a file with CRLF endings, no BOM.
+#
+# WORKSPACES ONLY. Premiere does not use one line-ending convention per platform:
+# two serialisers inside the same app disagree, writing into the same profile dir.
+#
+#   Adobe Premiere Pro Prefs   LF on BOTH platforms (pure LF, no CR anywhere)
+#   UserWorkspace*.xml         platform-native: LF on macOS, CRLF on Windows
+#
+# So "Windows means CRLF" is false for this profile as a whole, and converting the
+# prefs would move them AWAY from what Premiere writes. Only the workspaces get
+# converted; Set-PrefNode is EOL-preserving and leaves the prefs alone.
+#
+# We ship ONE workspace payload (LF, byte-pinned by .gitattributes) so the repo has
+# a single source of truth. Dropped as-is on Windows it is the only LF file in a
+# Layouts folder Premiere wrote entirely in CRLF, and its first save rewrites every
+# line. Convert on delivery instead, so the platform's own convention lands on disk.
+#
+function ConvertTo-CrlfFile {
+    param($path)
+    $enc = New-Object System.Text.UTF8Encoding $false
+    $text = [System.IO.File]::ReadAllText($path, $enc)
+    [System.IO.File]::WriteAllText($path, ($text -replace "`r?`n", "`r`n"), $enc)
+}
+
 # Set-PrefNode <prefs> <node> <value> - replace an XML leaf node's text in place.
 # Returns $false WITHOUT touching the file when the node is absent, so callers
 # can flag nodes a future Premiere version may have renamed (no edit = no corruption).
+#
+# EOL-preserving by construction, and deliberately so: it splices between the tags
+# (ReadAllBytes -> string -> Substring join -> WriteAllBytes) and never goes near a
+# newline, so whatever endings the file arrived with survive the edit. Do NOT
+# reimplement this with Get-Content/Set-Content or Out-File, which would normalise
+# the whole file as a side effect of changing one value.
+#
+# Note this file wants LF, unlike the workspaces next to it - see the serialiser
+# split documented on ConvertTo-CrlfFile. That is why nothing here converts.
 function Set-PrefNode {
     param($prefs, $node, $value)
     $bytes = [System.IO.File]::ReadAllBytes($prefs)
@@ -552,6 +585,15 @@ function Invoke-FastPass {
             # Drop the workspaces into Layouts. Premiere auto-registers them on launch.
             curl.exe -s --output-dir $layouts -O "https://raw.githubusercontent.com/lucuma13/load/refs/heads/main/src/data/$LAYOUT_FILE_1"
             curl.exe -s --output-dir $layouts -O "https://raw.githubusercontent.com/lucuma13/load/refs/heads/main/src/data/$LAYOUT_FILE_2"
+            # curl writes the body verbatim, so the payload lands LF. Re-end it CRLF to
+            # match the rest of the Layouts folder. Skipped under CLM, where the no-BOM
+            # .NET write is blocked.
+            if (-not $CLM) {
+                foreach ($layoutFile in @($LAYOUT_FILE_1, $LAYOUT_FILE_2)) {
+                    $layoutPath = Join-Path $layouts $layoutFile
+                    if (Test-Path $layoutPath) { ConvertTo-CrlfFile $layoutPath }
+                }
+            }
             $wsName = Get-WorkspaceName (Join-Path $layouts $LAYOUT_FILE_1)
 
             if ($PREMIERE_RUNNING) {
