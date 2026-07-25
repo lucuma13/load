@@ -48,13 +48,22 @@ function Find-AhkExe {
 # the uv-tool installs don't depend on the session PATH having refreshed after winget
 # installed it - which is unreliable under CLM, where %vars% in the registry PATH can't
 # be expanded. Checks PATH first, then winget's usual install/shim locations.
+#
+# Get-Command returns one result per PATH directory holding uv.exe, so -First 1 (PATH
+# order - the copy the shell itself would run) keeps a second install, from pip/scoop or
+# from "uv self update" seeding ~\.local\bin, out of $exe as an array: that array is
+# truthy, so it would skip the fallbacks below, and it can't be invoked with & either.
+# ProgramW6432 names the 64-bit Program Files from a host of either bitness, where
+# $env:ProgramFiles reads as the x86 dir under a 32-bit host and would never match a
+# machine-scope install; it's empty on 32-bit Windows, hence the fallback.
 function Find-UvExe {
-    $exe = Get-Command uv.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
+    $exe = Get-Command uv.exe -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source
     if (-not $exe) {
+        $pf = if ($env:ProgramW6432) { $env:ProgramW6432 } else { $env:ProgramFiles }
         $exe = Get-ChildItem `
             "$env:LOCALAPPDATA\Microsoft\WinGet\Links\uv.exe", `
             "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\astral-sh.uv*\uv.exe", `
-            "$env:ProgramFiles\WinGet\Links\uv.exe", `
+            "$pf\WinGet\Links\uv.exe", `
             "$env:USERPROFILE\.local\bin\uv.exe" `
             -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
     }
@@ -263,6 +272,39 @@ function Remove-SelfTemp {
     }
 }
 
+# Test-AppInstalled <pattern> - true if any Windows uninstall entry's DisplayName
+# matches <pattern> (per-machine 64- and 32-bit, plus per-user). Plenty of entries
+# carry no DisplayName at all, so "/v DisplayName" drops them before the match runs.
+#
+# reg.exe rather than Get-ItemProperty: a 32-bit PowerShell host reads HKLM\SOFTWARE
+# through WOW64 redirection, so both per-machine paths would collapse onto the 32-bit
+# view and a 64-bit-only entry (Flicker Free registers one) would read as missing -
+# reinstalling it on every run. /reg:64 and /reg:32 name the view explicitly whatever
+# the host's bitness, and unlike the .NET RegistryView API they still work under CLM.
+# HKCU isn't redirected for this path, so one view covers it.
+#
+# Kept above the library guard, with Remove-SelfTemp, so the tests can reach it.
+function Test-AppInstalled($pattern) {
+    foreach ($key in @(
+            @{ Path = "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"; View = "64" },
+            @{ Path = "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"; View = "32" },
+            @{ Path = "HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"; View = "64" }
+        )) {
+        # A key that isn't there (no per-user uninstall entries, or /reg:32 on 32-bit
+        # Windows) goes to stderr and yields no lines - no match, no noise.
+        foreach ($line in (reg.exe query $key.Path /s /v DisplayName "/reg:$($key.View)" 2>$null)) {
+            if ($line -match '\sDisplayName\s+REG_SZ\s+(.+)$') {
+                if ($Matches[1].Trim() -match $pattern) { return $true }
+            }
+        }
+    }
+    return $false
+}
+
+# Non-winget packages already on the machine? Each registers a Windows uninstall entry.
+function Test-FlickerFreeInstalled { Test-AppInstalled 'Flicker Free' }
+function Test-MisterHorseInstalled { Test-AppInstalled 'Mister Horse' }
+
 # Sourced as a library (tests set $env:LOAD_LIB): stop here, run nothing below.
 if ($env:LOAD_LIB) { return }
 
@@ -347,25 +389,6 @@ function Test-UvInstalled($pkg) {
 function Get-RegValue($path, $name) {
     (Get-ItemProperty -LiteralPath $path -Name $name -ErrorAction SilentlyContinue).$name
 }
-
-# Test-AppInstalled <pattern> - true if any Windows uninstall entry's DisplayName
-# matches <pattern> (per-machine 64- and 32-bit, plus per-user). Plenty of entries
-# carry no DisplayName at all, so -Name filters them out before the match runs.
-function Test-AppInstalled($pattern) {
-    foreach ($key in @(
-            "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
-            "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*",
-            "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*"
-        )) {
-        if (Get-ItemProperty $key -Name DisplayName -ErrorAction SilentlyContinue |
-                Where-Object { $_.DisplayName -match $pattern }) { return $true }
-    }
-    return $false
-}
-
-# Non-winget packages already on the machine? Each registers a Windows uninstall entry.
-function Test-FlickerFreeInstalled { Test-AppInstalled 'Flicker Free' }
-function Test-MisterHorseInstalled { Test-AppInstalled 'Mister Horse' }
 
 # Test-PremiereApplied - true once our shortcut set is active in any Premiere profile
 # (the prefs' Shortcuts.Filename points at our .kys). Reads the prefs with the same
@@ -660,6 +683,40 @@ function Update-SessionPath {
 # script-file rules and AV script heuristics don't apply, and cmd works under CLM too.
 function Invoke-ElevatedInstall {
     $cmds = @()
+    $wantMisterHorse = $false
+    $wantFlickerFree = $false
+
+    # Premiere plugins - download now (no admin needed), install in the elevated batch.
+    # msiexec and the Flicker Free GUI installer return immediately, so wrap them in
+    # "start /wait" (the leading "" is the required window-title placeholder) so the
+    # batch waits for each to finish.
+    #
+    # Queued AHEAD of the winget commands: winget returns as soon as a packaged installer
+    # hands off, but that installer's own Windows Installer transaction can still be open,
+    # and a second msiexec against a busy Installer exits at once with
+    # ERROR_INSTALL_ALREADY_RUNNING (1618). Under /qn that carries no dialog, and "&"
+    # ignores exit codes, so the install would vanish leaving nothing in the batch output
+    # or the event log - which is how Mister Horse got skipped behind an Acrobat install.
+    if ($PREMIERE_OK) {
+        if (-not (Test-MisterHorseInstalled)) {
+            $pmPath = "$WorkDir\MisterHorseProductManager.msi"
+            curl.exe -fsSL -o $pmPath "https://misterhorse.com/downloads/product-manager/win"
+            $cmds += "start `"`" /wait msiexec /i `"$pmPath`" /qn"
+            $wantMisterHorse = $true
+        }
+        # Flicker Free 2.0 - the download is a zip wrapping the installer .exe.
+        if (-not (Test-FlickerFreeInstalled)) {
+            $ffZip = "$WorkDir\flickerfree_229_AE.zip"
+            $ffDir = "$WorkDir\flickerfree_229_AE"
+            curl.exe -fsSL -o $ffZip "https://www.digitalanarchy.com/downloads/flickerfree_229_AE.zip"
+            Expand-Archive -Path $ffZip -DestinationPath $ffDir -Force
+            $ffExe = Get-ChildItem $ffDir -Filter *.exe | Select-Object -First 1
+            if ($ffExe) {
+                $cmds += "start `"`" /wait `"$($ffExe.FullName)`""
+                $wantFlickerFree = $true
+            }
+        }
+    }
 
     # winget: everything except uv, installed machine-wide. An upgrade keeps the
     # existing install's scope, so --scope is only set on a fresh install. winget waits
@@ -677,33 +734,6 @@ function Invoke-ElevatedInstall {
         }
     }
 
-    # Premiere plugins - download now (no admin needed), install in the elevated batch.
-    # msiexec and the Flicker Free GUI installer return immediately, so wrap them in
-    # "start /wait" (the leading "" is the required window-title placeholder) so the
-    # batch waits for each to finish.
-    $cleanup = @()
-    if ($PREMIERE_OK) {
-        if (-not (Test-MisterHorseInstalled)) {
-            $pmPath = "$WorkDir\MisterHorseProductManager.msi"
-            curl.exe -fsSL -o $pmPath "https://misterhorse.com/downloads/product-manager/win"
-            $cmds += "start `"`" /wait msiexec /i `"$pmPath`" /qn"
-            $cleanup += $pmPath
-        }
-        # Flicker Free 2.0 - the download is a zip wrapping the installer .exe.
-        if (-not (Test-FlickerFreeInstalled)) {
-            $ffZip = "$WorkDir\flickerfree_229_AE.zip"
-            $ffDir = "$WorkDir\flickerfree_229_AE"
-            curl.exe -fsSL -o $ffZip "https://www.digitalanarchy.com/downloads/flickerfree_229_AE.zip"
-            Expand-Archive -Path $ffZip -DestinationPath $ffDir -Force
-            $ffExe = Get-ChildItem $ffDir -Filter *.exe | Select-Object -First 1
-            if ($ffExe) {
-                $cmds += "start `"`" /wait `"$($ffExe.FullName)`""
-                $cleanup += $ffZip
-                $cleanup += $ffDir
-            }
-        }
-    }
-
     if ($cmds.Count -eq 0) { return }  # nothing needs admin - no prompt
 
     # Join with " & " (run each regardless of the previous one's exit code) and hand it
@@ -717,7 +747,23 @@ function Invoke-ElevatedInstall {
     catch {
         Write-Host "  [warn] Elevated install step did not run (admin prompt cancelled?): $_"
     }
-    foreach ($p in $cleanup) { Remove-Item -LiteralPath $p -Recurse -Force -ErrorAction SilentlyContinue }
+
+    # Each plugin re-checked against its uninstall entry, because nothing above reports a
+    # plugin that never installed: the batch swallows exit codes and a 1618 msiexec is
+    # silent under /qn. The download is deleted only once its plugin is actually there, so
+    # a failed install leaves the installer in $WorkDir to be run by hand or retried
+    # without fetching it again.
+    if ($wantMisterHorse) {
+        if (Test-MisterHorseInstalled) { Remove-Item -LiteralPath $pmPath -Force -ErrorAction SilentlyContinue }
+        else { Write-Host "  [warn] Mister Horse Product Manager did not install (another Windows Installer transaction may have been open) - re-run with --full, or run $pmPath yourself" }
+    }
+    if ($wantFlickerFree) {
+        if (Test-FlickerFreeInstalled) {
+            Remove-Item -LiteralPath $ffZip -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $ffDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        else { Write-Host "  [warn] Flicker Free did not install - re-run with --full, or run the installer in $ffDir yourself" }
+    }
 }
 
 function Invoke-SlowPass {

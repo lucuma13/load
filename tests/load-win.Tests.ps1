@@ -3,6 +3,8 @@
 #   - file encoding (pure ASCII, no BOM) so legacy PowerShell doesn't garble it
 #   - liveness of the external resources the installer pulls (plugins, winget, PyPI)
 #   - Set-PremierePro / Get-WorkspaceName / Set-PrefNode prefs handling
+#   - Test-AppInstalled across both registry views (a false negative reinstalls)
+#   - Find-UvExe returning a single path from the right candidate
 #
 # The script is sourced with $env:LOAD_LIB so only its functions load (no installer).
 #
@@ -32,6 +34,12 @@ $TimelineNodes = & {
             $n -is [System.Management.Automation.Language.StringConstantExpressionAst] }, $true) |
         ForEach-Object { @{ Node = $_.Value } }
 }
+
+# Resolved at discovery time so -Skip can see them. The WOW64 registry test needs a
+# 32-bit host to read from and elevation to plant a 64-bit-only entry to read.
+$Ps32Available = Test-Path "$env:WINDIR\SysWOW64\WindowsPowerShell\v1.0\powershell.exe"
+$IsElevatedHost = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()
+).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
 # PSScriptAnalyzer's PSUseCompatibleSyntax rule flags any 7+-only syntax (??
 # null-coalescing, ternaries, ?. etc.) for the target version, so this fails the
@@ -467,5 +475,129 @@ Describe "Set-PrefNode" {
         $before = (Get-FileHash $prefs -Algorithm SHA256).Hash
         Set-PrefNode $prefs "missing" "new" | Should -BeFalse
         (Get-FileHash $prefs -Algorithm SHA256).Hash | Should -Be $before
+    }
+}
+
+# Test-AppInstalled gates the non-winget installers, so a false negative reinstalls
+# Flicker Free and Mister Horse on every single run. Uninstall entries live in a
+# per-machine 64-bit view, a per-machine 32-bit view and a per-user one, and a 32-bit
+# PowerShell host reads HKLM:\SOFTWARE through WOW64 redirection - both per-machine
+# provider paths collapse onto the 32-bit view - so the lookup has to name the view.
+Describe "Test-AppInstalled" {
+    BeforeAll {
+        # A per-user entry needs no elevation and isn't WOW64-redirected, so it
+        # exercises the reg.exe output parsing on any runner, elevated or not.
+        $script:probeName = 'ZZ Load-Win Pester Probe'
+        $script:userKey = 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\ZZLoadWinPesterProbe'
+        New-Item -Path $script:userKey -Force | Out-Null
+        New-ItemProperty -Path $script:userKey -Name DisplayName -Value $script:probeName `
+            -PropertyType String -Force | Out-Null
+    }
+
+    AfterAll {
+        Remove-Item -LiteralPath $script:userKey -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    It "finds an uninstall entry by its DisplayName" {
+        Test-AppInstalled ([regex]::Escape($probeName)) | Should -BeTrue
+    }
+
+    It "reports a DisplayName that matches nothing as absent" {
+        Test-AppInstalled 'ZZ No Such Application 4f2c9e' | Should -BeFalse
+    }
+
+    # The regression itself: a 64-bit-only per-machine entry (Flicker Free registers
+    # one) read from a 32-bit host, which is where the redirected provider paths used
+    # to report "not installed" forever. Writing under HKLM needs elevation, so this
+    # runs on CI and on an elevated dev shell, and skips otherwise.
+    It "finds a 64-bit-only per-machine entry from a 32-bit host" -Skip:(-not ($IsElevatedHost -and $Ps32Available)) {
+        $key = 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\ZZLoadWinPesterProbe64'
+        $name = 'ZZ Load-Win Pester Probe 64'
+        # /reg:64 puts it in the native view only, invisible to a redirected reader.
+        reg.exe add $key /v DisplayName /t REG_SZ /d $name /reg:64 /f | Out-Null
+        try {
+            $child = Join-Path $TestDrive 'probe32.ps1'
+            $src = (Resolve-Path "$PSScriptRoot/../src/load-win.ps1").Path
+            Set-Content -LiteralPath $child -Encoding Ascii -Value @"
+`$env:LOAD_LIB = '1'
+. '$src'
+`$env:LOAD_LIB = `$null
+if (Test-AppInstalled '$name') { 'FOUND' } else { 'MISSING' }
+"@
+            $ps32 = "$env:WINDIR\SysWOW64\WindowsPowerShell\v1.0\powershell.exe"
+            (& $ps32 -NoProfile -ExecutionPolicy Bypass -File $child) |
+                Should -Be 'FOUND' -Because 'a 32-bit host must still read the 64-bit view'
+        }
+        finally {
+            reg.exe delete $key /f /reg:64 | Out-Null
+        }
+    }
+}
+
+# Find-UvExe picks the uv that the uv-tool installs are invoked through. It has to
+# return exactly one path: an array is truthy, so it would skip the fallback list
+# below it, and it can't be invoked with & either.
+Describe "Find-UvExe" {
+    BeforeAll {
+        function New-FakeUv($dir) {
+            New-Item -ItemType Directory -Force -Path $dir | Out-Null
+            $exe = Join-Path $dir 'uv.exe'
+            Set-Content -LiteralPath $exe -Value '' -Encoding Ascii
+            return $exe
+        }
+    }
+
+    BeforeEach {
+        $script:saved = @{
+            Path         = $env:Path
+            LocalAppData = $env:LOCALAPPDATA
+            ProgramW6432 = $env:ProgramW6432
+            UserProfile  = $env:USERPROFILE
+        }
+        $script:box = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+        # Every candidate starts pointing at an empty sandbox, so each test opts in to
+        # only the location it is about.
+        $env:Path = "$env:WINDIR\System32"
+        $env:LOCALAPPDATA = Join-Path $script:box 'localappdata'
+        $env:ProgramW6432 = Join-Path $script:box 'programfiles64'
+        $env:USERPROFILE = Join-Path $script:box 'userprofile'
+    }
+
+    AfterEach {
+        $env:Path = $script:saved.Path
+        $env:LOCALAPPDATA = $script:saved.LocalAppData
+        $env:ProgramW6432 = $script:saved.ProgramW6432
+        $env:USERPROFILE = $script:saved.UserProfile
+    }
+
+    It "returns one path, not an array, when uv.exe sits in two PATH directories" {
+        $first = New-FakeUv (Join-Path $box 'binA')
+        $second = New-FakeUv (Join-Path $box 'binB')
+        $env:Path = "$(Split-Path $first);$(Split-Path $second);$env:Path"
+        $uv = Find-UvExe
+        $uv | Should -BeOfType [string] -Because 'an array skips the fallbacks and cannot be invoked with &'
+        $uv | Should -Be $first -Because 'PATH order decides, matching the copy the shell itself would run'
+    }
+
+    It "falls back to the winget user-scope shim when PATH has no uv" {
+        $shim = New-FakeUv (Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Links')
+        Find-UvExe | Should -Be $shim
+    }
+
+    It "prefers the Links shim over the package directory" {
+        $shim = New-FakeUv (Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Links')
+        New-FakeUv (Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Packages\astral-sh.uv_test') | Out-Null
+        Find-UvExe | Should -Be $shim
+    }
+
+    # $env:ProgramFiles reads as the x86 directory under a 32-bit host, which would
+    # never match a machine-scope install; ProgramW6432 names the 64-bit one from both.
+    It "resolves the machine-scope candidate under the 64-bit Program Files" {
+        $machine = New-FakeUv (Join-Path $env:ProgramW6432 'WinGet\Links')
+        Find-UvExe | Should -Be $machine
+    }
+
+    It "returns nothing when uv is installed nowhere" {
+        Find-UvExe | Should -BeNullOrEmpty
     }
 }
