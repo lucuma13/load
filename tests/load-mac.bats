@@ -255,11 +255,10 @@ timeline_nodes() {
   done
 }
 
-# The fixtures are LF because that is what Premiere authors on macOS, but the
-same                # file is pure CRLF when Premiere authors it on Windows. A surviving \r
-would be            # written verbatim into the prefs, so the name must come back
-byte-identical from # both shapes. Derived from the LF fixture so the two can
-never drift apart.
+# The fixtures are LF because that is what Premiere authors on macOS, but the same
+# file is pure CRLF when Premiere authors it on Windows. A surviving \r would be
+# written verbatim into the prefs, so the name must come back byte-identical from
+# both shapes. Derived from the LF fixture so the two can never drift apart.
 @test "premiere_workspace_name is line-ending agnostic (CRLF workspace)" {
   for v in "${PREMIERE_VERSIONS[@]}"; do
     crlf="$BATS_TEST_TMPDIR/ws_crlf_$v.xml"
