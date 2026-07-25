@@ -1,3 +1,5 @@
-# Never normalize EOLs on fixtures or src/data
+# Never normalize EOLs on fixtures or src/data. These are byte-exact captures of
+# (and payloads for) Adobe's own files; a checkout that rewrote their EOLs would
+# be served straight to users by raw.githubusercontent.
 tests/fixtures/** -text
-src/data/*.       -text
+src/data/**       -text
