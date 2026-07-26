@@ -518,7 +518,8 @@ $FULL_PKGS = @(  # Add if needed: "AxiomaticSystems.Bento4", "wez.atomicparsley"
     "AutoHotkey.AutoHotkey",
     "Google.Chrome",
     "Adobe.Acrobat.Reader.64-bit",
-    "Audacity.Audacity"
+    "Audacity.Audacity",
+    "MediaHuman.AudioConverter"
 )
 $CORE_UV = @(
     "triplecheck",
@@ -543,6 +544,7 @@ $PKG_ALIAS = @{
     "Google.Chrome"               = "Google Chrome"
     "Adobe.Acrobat.Reader.64-bit" = "Adobe Acrobat Reader"
     "Audacity.Audacity"           = "Audacity"
+    "MediaHuman.AudioConverter"   = "MediaHuman Audio Converter"
     "lucuma13.prem-down"          = "prem-down"
 }
 function Get-PkgAlias($id) { if ($PKG_ALIAS.ContainsKey($id)) { $PKG_ALIAS[$id] } else { $id } }
