@@ -4,8 +4,8 @@
   "description": "macOS bats test tooling for the load workstation setup scripts",
   "private": true,
   "scripts": {
-    "check": "bash -n src/load-mac.sh",
-    "lint": "shellcheck src/load-mac.sh",
+    "check": "bash -n src/load-mac.sh && bash -n src/unload-mac.sh",
+    "lint": "shellcheck src/load-mac.sh src/unload-mac.sh",
     "_comment": "pin bats to system bash 3.2 to prevent deadlocks on the bats-preprocess here-string.",
     "test": "PATH=/bin:$PATH bats tests/",
     "test:ci": "bats --filter-tags '!live' tests/"

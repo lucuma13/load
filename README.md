@@ -18,3 +18,15 @@ $f="$env:TEMP\load-win.ps1"; Invoke-WebRequest -Uri "https://raw.githubuserconte
 ```
 
 Bare command runs on --fast mode first, then pauses before continuing into --full. --dry-run is also available.
+
+### 🍏 macOS - unload
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/lucuma13/load/main/src/unload-mac.sh)
+```
+
+### 🪟 Windows - unload
+
+```powershell
+& ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing -Uri "https://raw.githubusercontent.com/lucuma13/load/main/src/unload-win.ps1").Content))
+```

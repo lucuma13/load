@@ -49,7 +49,7 @@ jobs:
       - name: Install dependencies
         run: npm ci
       - name: Syntax check
-        run: bash -n src/load-mac.sh
+        run: npm run check
       - name: Lint (ShellCheck)
         uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # 2.0.0
         with:
