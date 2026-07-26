@@ -3,8 +3,8 @@
 Windows workstation cleanup script
 
 .DESCRIPTION
-It removes custom setup - load-win's work directory, AutoHotkey, claude-code and
-the shell history.
+It removes custom setup - load-win's work directory, AutoHotkey, claude-code,
+Mister Horse Product Manager sign-in, and the shell history.
 
 --dry-run is the only flag, to see the exact list before deleting.
 
@@ -38,16 +38,16 @@ Set-StrictMode -Version Latest
 # -----------------------------------------------------------------------------
 # Function library
 #
-# Everything above the LOAD_LIB guard is side-effect-free definitions, so the test
-# suite can dot-source this file (with $env:LOAD_LIB set) to exercise individual
-# functions without deleting anything.
+# Everything above the LOAD_LIB guard is side-effect-free definitions, so the
+# test suite can dot-source this file (with $env:LOAD_LIB set) to exercise
+# individual functions without deleting anything.
 # -----------------------------------------------------------------------------
 
 # Test-KnownArgument <args> - false when any argument isn't a recognised option.
 #
-# The bare command removes everything this script knows about, so an unrecognised
-# argument must stop the run rather than be ignored: a typo'd "--dryrun" would
-# otherwise fall through and be treated as a bare command.
+# The bare command removes everything this script knows about, so an
+# unrecognised argument must stop the run rather than be ignored: a typo'd
+# "--dryrun" would otherwise fall through and be treated as a bare command.
 function Test-KnownArgument {
     param([string[]]$Arguments = @())
     foreach ($arg in $Arguments) {
@@ -62,6 +62,7 @@ function Show-Usage {
     Write-Host "  Removes, from this account only:"
     Write-Host "    - the work directory ~\Downloads\load-win (LUTs, AHK macros, downloads)"
     Write-Host "    - AutoHotkey: quit and uninstalled"
+    Write-Host "    - Mister Horse Product Manager: signed out"
     Write-Host "    - Claude Code: signed out, uninstalled, and its local state wiped"
     Write-Host "    - the PowerShell (PSReadLine) command history"
     Write-Host ""
@@ -95,16 +96,32 @@ function Get-ClaudeStatePath {
         "$HOME\.claude.json"
         "$HOME\.claude.json.backup"
     )
-    # The CLI's node cache. Confirmed as ~/Library/Caches/claude-cli-nodejs on macOS;
-    # this is the LOCALAPPDATA equivalent. Guarded by Test-Path at the call site like
-    # every other path here, so if the name ever differs it is a silent no-op rather
-    # than an error.
+    # The CLI's node cache. Confirmed as ~/Library/Caches/claude-cli-nodejs on
+    # macOS; this is the LOCALAPPDATA equivalent. Guarded by Test-Path at the
+    # call site like every other path here, so if the name ever differs it is a
+    # silent no-op rather than an error.
     #
-    # Appended only when LOCALAPPDATA is actually set: interpolating an empty variable
-    # would yield the relative "\claude-cli-nodejs", which Test-UnderHome then refuses
-    # with a warning - a confusing complaint about a path we invented ourselves.
+    # Appended only when LOCALAPPDATA is actually set: interpolating an empty
+    # variable would yield the relative "\claude-cli-nodejs", which
+    # Test-UnderHome then refuses with a warning - a confusing complaint about a
+    # path we invented ourselves.
     if ($env:LOCALAPPDATA) { $paths += "$env:LOCALAPPDATA\claude-cli-nodejs" }
     return $paths
+}
+
+# Get-MisterHorseStatePath - the per-user state Mister Horse keeps, which on
+# Windows is also where the signed-in account lives.
+#
+# The session is held in the app's own encrypted .dat files under
+# %LOCALAPPDATA%\MisterHorse - not in the registry and not in Credential Manager
+# - so removing that tree IS the local sign-out.
+#
+# Guarded on LOCALAPPDATA being set: interpolating an empty variable would yield
+# the relative "\MisterHorse", which Test-UnderHome then refuses with a warning
+# - a confusing complaint about a path we invented ourselves.
+function Get-MisterHorseStatePath {
+    if (-not $env:LOCALAPPDATA) { return @() }
+    return @("$env:LOCALAPPDATA\MisterHorse")
 }
 
 # Get-HistoryPath - every shell-history file to remove.
@@ -115,9 +132,10 @@ function Get-ClaudeStatePath {
 # first, then sweep the whole PSReadLine directory for the other hosts' files -
 # a console this script was never launched from still has its history on disk.
 #
-# Deduped, because the live session's path is normally one of the files the sweep
-# already found. A real run wouldn't care (Remove-TargetPath is silent the second
-# time), but --dry-run would print the same path twice and read like a bug.
+# Deduped, because the live session's path is normally one of the files the
+# sweep already found. A real run wouldn't care (Remove-TargetPath is silent the
+# second time), but --dry-run would print the same path twice and read like a
+# bug.
 function Get-HistoryPath {
     $paths = @()
     $opt = Get-PSReadLineOption -ErrorAction SilentlyContinue
@@ -138,11 +156,11 @@ function Get-HistoryPath {
 # LOCALAPPDATA/APPDATA, which sit outside $HOME under a redirected profile) and
 # free of "..".
 #
-# Every removal this script makes is per-user, so this is the single guard between
-# a variable that came back empty (or unexpanded, or relative) and a recursive
-# delete with a catastrophic argument. Remove-TargetPath refuses anything that
-# fails it rather than trusting its caller, because there is no undo for what
-# follows.
+# Every removal this script makes is per-user, so this is the single guard
+# between a variable that came back empty (or unexpanded, or relative) and a
+# recursive delete with a catastrophic argument. Remove-TargetPath refuses
+# anything that fails it rather than trusting its caller, because there is no
+# undo for what follows.
 function Test-UnderHome {
     param([string]$Path)
     if (-not $Path) { return $false }
@@ -201,8 +219,8 @@ $CLAUDE_PKG = "Anthropic.ClaudeCode"
 
 # AutoHotkey's id in load-win.ps1's $FULL_PKGS. It is the one app load installs
 # that exists purely to serve load - it runs the Mac-keyboard macros and nothing
-# else - which is why unload removes it while leaving VLC, FFmpeg and the rest of
-# the installed apps in place.
+# else - which is why unload removes it while leaving VLC, FFmpeg and the rest
+# of the installed apps in place.
 $AHK_PKG = "AutoHotkey.AutoHotkey"
 
 function Section { param($msg); Write-Host ("  " + $msg) }
@@ -222,11 +240,11 @@ function Get-DisplayPath {
     return $Path
 }
 
-# Remove-TargetPath <path> - remove a file or directory tree, honouring --dry-run.
-# Prints exactly one line whether it deletes or only previews, so a dry run's
-# output is precisely what a real run would do. Returns $false and stays silent
-# when there is nothing there, so callers can distinguish "cleaned" from "already
-# clean" and report an empty section as such.
+# Remove-TargetPath <path> - remove a file or directory tree, honouring
+# --dry-run. Prints exactly one line whether it deletes or only previews, so a
+# dry run's output is precisely what a real run would do. Returns $false and
+# stays silent when there is nothing there, so callers can distinguish "cleaned"
+# from "already clean" and report an empty section as such.
 function Remove-TargetPath {
     param([string]$Path)
     if (-not $Path) { return $false }
@@ -333,6 +351,65 @@ function Clear-Ahk {
     }
 }
 
+# Get-MisterHorseProcess - every running Mister Horse process (the Product
+# Manager and the crash handler that sits beside it).
+#
+# Matched on the image PATH, not the process name: "ProductManager.exe" is a
+# generic enough name to belong to some other vendor's app. A regex rather than
+# a WQL filter so both spellings of the vendor's own folder are covered -
+# "Mister Horse Product Manager" under Program Files, "MisterHorse" for anything
+# installed beside its state dir.
+function Get-MisterHorseProcess {
+    return @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+            Where-Object { $_.ExecutablePath -and $_.ExecutablePath -match '(?i)mister ?horse' })
+}
+
+# Stop-MisterHorseProcess - quit the Product Manager so the sign-out below
+# sticks.
+#
+# It holds the session in memory and writes its state back as it closes, so
+# files deleted underneath a running Product Manager come straight back.
+function Stop-MisterHorseProcess {
+    # Re-wrapped in @() at the call site, exactly as Stop-AhkProcess wraps its
+    # own Get-CimInstance: PowerShell unrolls a returned array, so with nothing
+    # running $procs is $null - and under Set-StrictMode -Version Latest,
+    # reading .Count off $null is an error rather than a zero.
+    $procs = @(Get-MisterHorseProcess)
+    if ($procs.Count -eq 0) { return $false }
+    if ($DRY_RUN) {
+        Removing "Would quit $($procs.Count) running Mister Horse process(es)"
+        return $true
+    }
+    foreach ($p in $procs) { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue }
+    Removing "Quit $($procs.Count) running Mister Horse process(es)"
+    return $true
+}
+
+# Clear-MisterHorse - sign this account out of Mister Horse, leaving the plugins
+# installed. See Get-MisterHorseStatePath for why removing that state is the
+# sign-out.
+function Clear-MisterHorse {
+    Section "Mister Horse (Animation Composer)"
+    $did = $false
+    if (Stop-MisterHorseProcess) { $did = $true }
+    foreach ($path in Get-MisterHorseStatePath) {
+        if (Remove-TargetPath $path) { $did = $true }
+    }
+    if (-not $did) { NothingToDo }
+
+    # A panel open inside a running Premiere or After Effects has the same
+    # session in memory and writes its own copy back when the host quits, so a
+    # sign-out performed underneath it does not stick. Killing the host would
+    # cost the user unsaved work, so say so instead. Skipped on a dry run, where
+    # nothing has been removed for a panel to undo.
+    if (-not $DRY_RUN) {
+        $hostApps = @(Get-Process -Name "Adobe Premiere Pro*", "AfterFX*" -ErrorAction SilentlyContinue)
+        if ($hostApps.Count -gt 0) {
+            Note "Premiere Pro / After Effects is open - close it and re-run, or its Mister Horse panel will write the session back."
+        }
+    }
+}
+
 function Clear-Claude {
     Section "Claude Code"
     $did = $false
@@ -348,10 +425,10 @@ function Clear-Claude {
     if (-not $did) { NothingToDo }
 
     # A `claude` still on PATH after all that was installed some other way - the
-    # native installer (~\.local\bin) or a global npm package - which this script
-    # deliberately doesn't touch. Say so rather than let a "cleaned" summary imply
-    # the machine is clear. Skipped on a dry run, where nothing has been removed
-    # yet and the binary is still there by definition.
+    # native installer (~\.local\bin) or a global npm package - which this
+    # script deliberately doesn't touch. Say so rather than let a "cleaned"
+    # summary imply the machine is clear. Skipped on a dry run, where nothing
+    # has been removed yet and the binary is still there by definition.
     if (-not $DRY_RUN) {
         $claude = Get-Command claude -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source
         if ($claude) { Note "'claude' is still on PATH at $claude - not a winget install; remove it by hand" }
@@ -390,6 +467,7 @@ try {
     # the work directory goes nothing is running out of it.
     Clear-Ahk
     Clear-WorkDir
+    Clear-MisterHorse
     Clear-Claude
     Clear-ShellHistory
 
@@ -402,6 +480,7 @@ finally {
     Remove-SelfTemp
 }
 
-# Completeness sentinel - MUST be the last line. The download entrypoint verifies
-# the file ends with this before executing, so a truncated download is rejected.
+# Completeness sentinel - MUST be the last line. The download entrypoint
+# verifies the file ends with this before executing, so a truncated download is
+# rejected.
 # === END unload-win.ps1 ===

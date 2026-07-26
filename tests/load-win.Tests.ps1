@@ -1,12 +1,17 @@
 # Tests for src/load-win.ps1, both whole-script and Premiere-prefs:
 #   - PowerShell 5.1 syntax compatibility (no 7+-only syntax ships)
 #   - file encoding (pure ASCII, no BOM) so legacy PowerShell doesn't garble it
-#   - liveness of the external resources the installer pulls (plugins, winget, PyPI)
+#   - liveness of the external resources the installer pulls (plugins, winget,
+#     PyPI)
 #   - Set-PremierePro / Get-WorkspaceName / Set-PrefNode prefs handling
 #   - Test-AppInstalled across both registry views (a false negative reinstalls)
 #   - Find-UvExe returning a single path from the right candidate
+#   - Constrained Language Mode survival, statically (no blocked .NET is
+#     reachable while $CLM is true) and at runtime (a real CLM child shell loads
+#     and dry-runs it)
 #
-# The script is sourced with $env:LOAD_LIB so only its functions load (no installer).
+# The script is sourced with $env:LOAD_LIB so only its functions load (no
+# installer).
 #
 # Run:  Invoke-Pester tests\load-win.Tests.ps1
 
@@ -16,7 +21,8 @@ BeforeAll {
     $env:LOAD_LIB = $null
 }
 
-# Discover every captured version; adding a premiere_pro_* fixture dir is enough.
+# Discover every captured version; adding a premiere_pro_* fixture dir is
+# enough.
 $PremiereVersions = Get-ChildItem "$PSScriptRoot/fixtures" -Directory -Filter 'premiere_pro_*' |
     Sort-Object Name | ForEach-Object {
         @{ Version = ($_.Name -replace '^premiere_pro_v?', ''); Dir = $_.Name }
@@ -35,14 +41,16 @@ $TimelineNodes = & {
         ForEach-Object { @{ Node = $_.Value } }
 }
 
-# Resolved at discovery time so -Skip can see them. The WOW64 registry test needs a
-# 32-bit host to read from and elevation to plant a 64-bit-only entry to read.
+# Resolved at discovery time so -Skip can see them. The WOW64 registry test
+# needs a 32-bit host to read from and elevation to plant a 64-bit-only entry to
+# read.
 #
-# WindowsIdentity::GetCurrent() THROWS on non-Windows, and at discovery scope that
-# aborts the whole file (0 tests collected) - so it must stay behind the host check
-# for the platform-agnostic tests here to run on macOS/Linux. $IsWindows only exists
-# on PowerShell 6+; on 5.1 it is undefined, hence the Test-Path rather than a bare
-# truthiness check, which would otherwise read as "not Windows" on the 5.1 target.
+# WindowsIdentity::GetCurrent() THROWS on non-Windows, and at discovery scope
+# that aborts the whole file (0 tests collected) - so it must stay behind the
+# host check for the platform-agnostic tests here to run on macOS/Linux.
+# $IsWindows only exists on PowerShell 6+; on 5.1 it is undefined, hence the
+# Test-Path rather than a bare truthiness check, which would otherwise read as
+# "not Windows" on the 5.1 target.
 $IsWindowsHost = (-not (Test-Path Variable:IsWindows)) -or $IsWindows
 $Ps32Available = Test-Path "$env:WINDIR\SysWOW64\WindowsPowerShell\v1.0\powershell.exe"
 $IsElevatedHost = $IsWindowsHost -and ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -75,8 +83,9 @@ Describe "load-win.ps1 PowerShell 5.1 compatibility" {
     }
 }
 
-# The script is downloaded and run by pre-installed Windows PowerShell 5.1 on a fresh Windows Machine,
-# which garbles a UTF-8 BOM and non-ASCII bytes into '?'. Keep the distributed script pure ASCII.
+# The script is downloaded and run by pre-installed Windows PowerShell 5.1 on a
+# fresh Windows Machine, which garbles a UTF-8 BOM and non-ASCII bytes into '?'.
+# Keep the distributed script pure ASCII.
 Describe "load-win.ps1 encoding (Windows PowerShell 5.1 safe)" {
     BeforeAll {
         $script:scriptBytes = [System.IO.File]::ReadAllBytes("$PSScriptRoot/../src/load-win.ps1")
@@ -96,9 +105,10 @@ Describe "load-win.ps1 encoding (Windows PowerShell 5.1 safe)" {
     }
 }
 
-# The script ends with a sentinel line so the launch command can confirm the download
-# arrived whole - a truncated copy (dropped connection) loses the tail and is rejected
-# before it runs. This guards the sentinel's presence so the check can't silently rot.
+# The script ends with a sentinel line so the launch command can confirm the
+# download arrived whole - a truncated copy (dropped connection) loses the tail
+# and is rejected before it runs. This guards the sentinel's presence so the
+# check can't silently rot.
 Describe "load-win.ps1 completeness sentinel" {
     BeforeAll {
         $script:sentinel = '# === END load-win.ps1 ==='
@@ -111,16 +121,18 @@ Describe "load-win.ps1 completeness sentinel" {
 
     It "a truncated copy fails the sentinel check" {
         $truncated = $scriptText.Substring(0, [int]($scriptText.Length / 2))
-        # The sentinel string also appears in the .EXAMPLE header near the top, so a
-        # truncated copy still *contains* it - which is exactly why the launch check must
-        # test ends-with (the tail arrived), not merely presence.
+        # The sentinel string also appears in the .EXAMPLE header near the top,
+        # so a truncated copy still *contains* it - which is exactly why the
+        # launch check must test ends-with (the tail arrived), not merely
+        # presence.
         $truncated | Should -BeLike "*$sentinel*" -Because "the header copy is within the first half"
         $truncated.TrimEnd() | Should -Not -BeLike "*$sentinel"
     }
 }
 
-# These hit the network to confirm the hard-coded plugin installer URLs are still live. Exclude them
-# on an offline run with:  Invoke-Pester -ExcludeTag Live
+# These hit the network to confirm the hard-coded plugin installer URLs are
+# still live. Exclude them on an offline run with:  Invoke-Pester -ExcludeTag
+# Live
 
 # Confirms every pinned winget id still resolves on the winget source
 Describe "winget package ids resolve" -Tag 'Live' {
@@ -157,6 +169,48 @@ Describe "Plugin download links" -Tag 'Live' {
             $resp = Invoke-WebRequest -Uri $Url -Headers @{ Range = 'bytes=0-0' } -MaximumRedirection 5 -UseBasicParsing -TimeoutSec 30
         }
         [int]$resp.StatusCode | Should -BeIn @(200, 206)
+    }
+}
+
+# Every installer in the elevated batch has to run unattended. They are launched
+# inside one elevated cmd.exe the user never opened, from a script that goes on
+# to apply the rest of the setup and wait on that process, so an installer that
+# stops on a licence page or a "Next" button hangs the whole run behind a window
+# the user has to find. The non-winget plugins are the ones that need saying
+# explicitly: msiexec takes /qn, and Flicker Free's NSIS installer takes /S
+# (case-sensitive - a lowercase /s reaches the script as an unknown argument and
+# the wizard opens anyway). Text-based, because Invoke-ElevatedInstall lives
+# below the $env:LOAD_LIB boundary and builds these as command-line strings for
+# cmd rather than invoking them.
+Describe "elevated installers run unattended" {
+    BeforeAll {
+        $loadWin = Get-Content "$PSScriptRoot/../src/load-win.ps1" -Raw
+        $script:body = [regex]::Match($loadWin, '(?s)function Invoke-ElevatedInstall \{.*?\n\}').Value
+        $script:queued = @($body -split "`r?`n" | Where-Object { $_ -match '\$cmds \+=' })
+    }
+
+    It "finds the queued install commands" {
+        $body | Should -Not -BeNullOrEmpty -Because "Invoke-ElevatedInstall should be findable"
+        $queued.Count | Should -BeGreaterThan 2 -Because "the batch queues the two plugins and the winget packages"
+    }
+
+    It "runs the Flicker Free installer silently" {
+        $ff = @($queued | Where-Object { $_ -match 'ffExe' })
+        $ff.Count | Should -Be 1 -Because "Flicker Free is queued once"
+        $ff[0] | Should -CMatch '\s/S\b' -Because "without NSIS's /S the user has to click Accept through the wizard"
+    }
+
+    It "runs the Mister Horse MSI silently" {
+        $mh = @($queued | Where-Object { $_ -match 'msiexec' })
+        $mh.Count | Should -Be 1
+        $mh[0] | Should -CMatch '\s/qn\b'
+    }
+
+    # The catch-all: anything added to the batch later must carry a silent switch too.
+    It "queues no installer that can stop for input" {
+        $loud = @($queued | Where-Object { $_ -notmatch '(?-i)\s(/S|/qn|--silent)\b' })
+        $loud | Should -BeNullOrEmpty -Because (
+            "each of these can open a window an unattended run then waits on:`n$($loud -join "`n")")
     }
 }
 
@@ -209,6 +263,359 @@ Describe "Remove-SelfTemp temp-dir guard" {
     }
 }
 
+# Windows lets Documents and Downloads live anywhere, and OneDrive's folder backup
+# moves them under %USERPROFILE%\OneDrive without touching $HOME - so "$HOME\Documents"
+# finds nothing and the whole Premiere step silently no-ops. Registry-backed, so
+# Windows-only.
+# Get-RegValue is the only registry reader in the script, and every caller depends on
+# a missing value coming back as $null rather than erroring. Under
+# Set-StrictMode -Version Latest the obvious `(Get-ItemProperty -EA SilentlyContinue).X`
+# still throws on a missing property, AND leaves the assignment target undefined, so
+# the next read throws again - two errors per lookup on precisely the fresh profile
+# this script targets (no Keyboard Layout\Toggle, no UserChoice for an unclaimed type).
+# These run the reads in a child shell so the strict-mode error surfaces as it would
+# in production rather than being absorbed by the test host.
+Describe "Get-RegValue" -Skip:(-not $IsWindowsHost) {
+    BeforeAll {
+        $script:key = 'HKCU:\Software\ZZLoadWinRegProbe'
+        New-Item -Path $script:key -Force | Out-Null
+        New-ItemProperty -Path $script:key -Name 'Present' -Value 'yes' -PropertyType String -Force | Out-Null
+        $script:srcPath = (Resolve-Path "$PSScriptRoot/../src/load-win.ps1").Path
+    }
+
+    AfterAll { Remove-Item -LiteralPath $script:key -Recurse -Force -ErrorAction SilentlyContinue }
+
+    It "returns the value when present" {
+        Get-RegValue $key 'Present' | Should -Be 'yes'
+    }
+
+    It "returns null for <Name>" -ForEach @(
+        @{ Name = 'a missing value on an existing key'; Path = 'HKCU:\Software\ZZLoadWinRegProbe'; Value = 'Absent' }
+        @{ Name = 'a key that does not exist'; Path = 'HKCU:\Software\ZZLoadWinNoSuchKey'; Value = 'Absent' }
+    ) {
+        Get-RegValue $Path $Value | Should -BeNullOrEmpty
+    }
+
+    # The regression itself: silence. A lookup that errors still "works" (the caller
+    # sees a falsy value) but prints a stack trace mid-checklist on a clean machine.
+    It "writes nothing to the error stream for <Name>" -ForEach @(
+        @{ Name = 'a missing value on an existing key'; Path = 'HKCU:\Software\ZZLoadWinRegProbe'; Value = 'Absent' }
+        @{ Name = 'a key that does not exist'; Path = 'HKCU:\Software\ZZLoadWinNoSuchKey'; Value = 'Absent' }
+    ) {
+        $errFile = Join-Path $TestDrive "regvalue-$([guid]::NewGuid().ToString('N')).err"
+        $cmd = "`$env:LOAD_LIB='1'; . '$srcPath'; `$env:LOAD_LIB=`$null; " +
+        "`$v = Get-RegValue '$Path' '$Value'; if (`$null -eq `$v) { 'NULL' } else { `$v }"
+        $out = & "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -Command $cmd 2> $errFile
+
+        $stderr = (Get-Content $errFile -Raw -ErrorAction SilentlyContinue) + ''
+        $stderr | Should -BeNullOrEmpty -Because "a clean lookup must not print:`n$stderr"
+        $out | Should -Be 'NULL' -Because 'a missing value reads as $null, and the assignment must still happen'
+    }
+}
+
+Describe "Get-UserFolder (known-folder redirection)" -Skip:(-not $IsWindowsHost) {
+    BeforeAll {
+        $script:probeKey = 'HKCU:\Software\ZZLoadWinFolderProbe'
+        New-Item -Path $script:probeKey -Force | Out-Null
+        # A redirected folder that exists, mimicking OneDrive's Documents move.
+        $script:redirected = Join-Path $env:TEMP 'ZZLoadWinRedirected'
+        New-Item -ItemType Directory -Force -Path $script:redirected | Out-Null
+        New-ItemProperty -Path $script:probeKey -Name 'Personal' -Value $script:redirected `
+            -PropertyType ExpandString -Force | Out-Null
+        # A folder recorded in the registry but no longer on disk (detached OneDrive).
+        New-ItemProperty -Path $script:probeKey -Name 'Stale' -Value 'Z:\gone\Documents' `
+            -PropertyType ExpandString -Force | Out-Null
+    }
+
+    AfterAll {
+        Remove-Item -LiteralPath $script:probeKey -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $script:redirected -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    It "prefers the redirected path over the profile-relative guess" {
+        Get-UserFolder 'Personal' 'C:\zz-fallback-must-not-win' $probeKey | Should -Be $redirected
+    }
+
+    It "falls back when the value name is absent" {
+        Get-UserFolder 'ZZNoSuchValue' 'C:\Windows' $probeKey | Should -Be 'C:\Windows'
+    }
+
+    # A stale entry is worse than the guess - following it would write into
+    # nowhere.
+    It "falls back when the recorded folder no longer exists" {
+        Get-UserFolder 'Stale' 'C:\Windows' $probeKey | Should -Be 'C:\Windows'
+    }
+
+    # The live read must actually resolve, or every caller silently runs on the
+    # fallback.
+    It "resolves the real Documents folder on this machine" {
+        $real = (Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders' `
+                -Name Personal -ErrorAction SilentlyContinue).Personal
+        $real | Should -Not -BeNullOrEmpty -Because 'User Shell Folders\Personal is the authority for Documents'
+        Get-UserFolder 'Personal' 'C:\zz-fallback-must-not-win' | Should -Be $real
+    }
+}
+
+# The default folder view is a set of registry facts that have to agree, none of
+# which is readable as a plain "sort by" setting: an opaque Sort blob and a
+# GroupView/GroupByKey pair per folder type, plus the ABSENCE of FolderType in a
+# second Bags tree. Each blob is decoded here field by field so a typo in 44
+# hand-written bytes fails as "sorts by the wrong column" rather than as a
+# folder view nobody notices is wrong.
+Describe "Explorer default folder view" -Skip:(-not $IsWindowsHost) {
+    BeforeAll {
+        $script:baseKey = 'HKCU:\Software\ZZLoadWinViewProbe\Base'
+        $script:typeKey = 'HKCU:\Software\ZZLoadWinViewProbe\Type'
+        New-Item -Path $script:baseKey -Force | Out-Null
+        New-Item -Path $script:typeKey -Force | Out-Null
+
+        # Put the probe keys in the state Set-ExplorerDefaultView would leave
+        # them in: every template written, and no FolderType override.
+        function Set-ProbeApplied {
+            foreach ($t in $ExplorerViewTemplates.Keys) {
+                $k = Join-Path $script:baseKey $t
+                New-Item -Path $k -Force | Out-Null
+                Set-ItemProperty -LiteralPath $k -Name 'Sort' -Value $ExplorerViewTemplates[$t] -Type Binary
+                Set-ItemProperty -LiteralPath $k -Name 'GroupView' -Value 0 -Type DWord
+            }
+            Remove-ItemProperty -LiteralPath $script:typeKey -Name 'FolderType' -Force -ErrorAction SilentlyContinue
+        }
+
+        $script:srcPath = (Resolve-Path "$PSScriptRoot/../src/load-win.ps1").Path
+        $script:ast = [System.Management.Automation.Language.Parser]::ParseFile($srcPath, [ref]$null, [ref]$null)
+    }
+
+    AfterAll {
+        Remove-Item -LiteralPath 'HKCU:\Software\ZZLoadWinViewProbe' -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    # Recreated rather than cleared value-by-value: Remove-ItemProperty -Name
+    # '*' does not wildcard, so with -ErrorAction SilentlyContinue it left the
+    # previous test's values in place and the "never been set up" case read as
+    # already applied.
+    BeforeEach {
+        Remove-Item -LiteralPath 'HKCU:\Software\ZZLoadWinViewProbe' -Recurse -Force -ErrorAction SilentlyContinue
+        New-Item -Path $script:baseKey -Force | Out-Null
+        New-Item -Path $script:typeKey -Force | Out-Null
+    }
+
+    Context "the Sort blobs" {
+        # Offsets from the SORTCOLUMN layout documented on $SORT_BY_NAME_ASC.
+        It "<Name> is one column on the shell property set" -ForEach @(
+            @{ Name = 'SORT_BY_NAME_ASC'; Blob = { $SORT_BY_NAME_ASC } }
+            @{ Name = 'SORT_BY_DATE_MODIFIED_DESC'; Blob = { $SORT_BY_DATE_MODIFIED_DESC } }
+        ) {
+            $b = & $Blob
+            $b.Count | Should -Be 44 -Because '16-byte reserved header + count + one 24-byte SORTCOLUMN'
+            # Reserved header.
+            @($b[0..15] | Where-Object { $_ -ne 0 }) | Should -BeNullOrEmpty
+            [System.BitConverter]::ToUInt32($b, 0x10) | Should -Be 1 -Because 'one sort column'
+            # The shell's own property set, stored little-endian.
+            (New-Object System.Guid (, [byte[]]$b[0x14..0x23])).ToString() |
+                Should -Be 'b725f130-47ef-101a-a5f1-02608c9eebac'
+        }
+
+        It "sorts by Name, ascending" {
+            [System.BitConverter]::ToUInt32($SORT_BY_NAME_ASC, 0x24) | Should -Be 10 -Because 'PID 10 is System.ItemNameDisplay ("Name")'
+            [System.BitConverter]::ToInt32($SORT_BY_NAME_ASC, 0x28) | Should -Be 1 -Because '1 is ascending, -1 descending'
+        }
+
+        # The whole point of the Downloads template: newest file at the top.
+        It "sorts by Date modified, descending" {
+            [System.BitConverter]::ToUInt32($SORT_BY_DATE_MODIFIED_DESC, 0x24) | Should -Be 14 -Because 'PID 14 is System.DateModified'
+            [System.BitConverter]::ToInt32($SORT_BY_DATE_MODIFIED_DESC, 0x28) | Should -Be -1 -Because 'descending is most recent first'
+        }
+    }
+
+    Context "the folder-type templates" {
+        # Downloads getting a different sort from everything else is the entire
+        # reason this is keyed by folder type rather than written once, so
+        # assert the split.
+        It "give Downloads Date modified and every other type Name" {
+            $ExplorerViewTemplates.Keys | Should -Contain $FOLDERTYPE_DOWNLOADS
+            ($ExplorerViewTemplates[$FOLDERTYPE_DOWNLOADS] -join ',') |
+                Should -Be ($SORT_BY_DATE_MODIFIED_DESC -join ',')
+            foreach ($t in $ExplorerViewTemplates.Keys) {
+                if ($t -eq $FOLDERTYPE_DOWNLOADS) { continue }
+                ($ExplorerViewTemplates[$t] -join ',') |
+                    Should -Be ($SORT_BY_NAME_ASC -join ',') -Because "$t should keep Name/ascending"
+            }
+        }
+
+        # Every type Explorer can guess a plain filesystem folder into needs a template,
+        # or that folder falls back to a built-in one and the sort changes under you as
+        # its contents change type.
+        It "cover every guessable folder type" {
+            $ExplorerViewTemplates.Keys | Should -Contain $FOLDERTYPE_GENERIC
+            $ExplorerViewTemplates.Keys | Should -Contain $FOLDERTYPE_DOCUMENTS
+            $ExplorerViewTemplates.Keys | Should -Contain $FOLDERTYPE_PICTURES
+            $ExplorerViewTemplates.Keys | Should -Contain $FOLDERTYPE_MUSIC
+            $ExplorerViewTemplates.Keys | Should -Contain $FOLDERTYPE_VIDEOS
+        }
+
+        # The GUIDs are not guessable and a wrong one fails silently - the
+        # template is simply never read. HKLM is the authority Explorer itself
+        # uses.
+        It "name the folder type <Canonical> correctly" -ForEach @(
+            @{ Canonical = 'Generic'; Guid = { $FOLDERTYPE_GENERIC } }
+            @{ Canonical = 'Documents'; Guid = { $FOLDERTYPE_DOCUMENTS } }
+            @{ Canonical = 'Pictures'; Guid = { $FOLDERTYPE_PICTURES } }
+            @{ Canonical = 'Music'; Guid = { $FOLDERTYPE_MUSIC } }
+            @{ Canonical = 'Videos'; Guid = { $FOLDERTYPE_VIDEOS } }
+            @{ Canonical = 'Downloads'; Guid = { $FOLDERTYPE_DOWNLOADS } }
+        ) {
+            $g = & $Guid
+            $p = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\FolderTypes\$g"
+            (Get-ItemProperty -LiteralPath $p -Name CanonicalName -ErrorAction SilentlyContinue).CanonicalName |
+                Should -Be $Canonical
+        }
+    }
+
+    Context "Test-ExplorerDefaultView" {
+        It "is true once every template is ours" {
+            Set-ProbeApplied
+            Test-ExplorerDefaultView $baseKey $typeKey | Should -BeTrue
+        }
+
+        It "is false on a machine that has never been set up" {
+            Test-ExplorerDefaultView $baseKey $typeKey | Should -BeFalse
+        }
+
+        # The regression this shape exists to prevent: `-eq` between two byte
+        # arrays FILTERS rather than compares, so a match on a blob whose first
+        # byte is 0x00 reads as falsy and the step re-runs (clearing shellbags,
+        # bouncing the shell) on every single run.
+        It "does not report a perfect Sort match as a mismatch" {
+            Set-ProbeApplied
+            $SORT_BY_NAME_ASC[0] | Should -Be 0 -Because 'the leading zero is what made the naive -eq wrong'
+            $SORT_BY_DATE_MODIFIED_DESC[0] | Should -Be 0
+            Test-ExplorerDefaultView $baseKey $typeKey | Should -BeTrue
+        }
+
+        It "is false when <Name>" -ForEach @(
+            @{ Name = 'a generic folder sorts by Date modified'; Break = 'sort' }
+            @{ Name = 'Downloads was left on Name like everything else'; Break = 'downloads' }
+            @{ Name = 'grouping is still on'; Break = 'group' }
+            @{ Name = 'an older run left FolderType pinned'; Break = 'foldertype' }
+        ) {
+            Set-ProbeApplied
+            $generic = Join-Path $baseKey $FOLDERTYPE_GENERIC
+            switch ($Break) {
+                'sort' { Set-ItemProperty -LiteralPath $generic -Name 'Sort' -Value $SORT_BY_DATE_MODIFIED_DESC -Type Binary }
+                'downloads' {
+                    Set-ItemProperty -LiteralPath (Join-Path $baseKey $FOLDERTYPE_DOWNLOADS) `
+                        -Name 'Sort' -Value $SORT_BY_NAME_ASC -Type Binary
+                }
+                'group' { Set-ItemProperty -LiteralPath $generic -Name 'GroupView' -Value 0xffffffff -Type DWord }
+                'foldertype' { Set-ItemProperty -LiteralPath $typeKey -Name 'FolderType' -Value 'NotSpecified' -Type String }
+            }
+            Test-ExplorerDefaultView $baseKey $typeKey | Should -BeFalse
+        }
+    }
+
+    Context "Set-ExplorerDefaultView safety" {
+        # Applying the view recursively deletes four registry trees and kills the
+        # shell. Both facts below are what keep that from happening on every run - and
+        # neither can be tested by calling the function, which is the point.
+
+        It "clears shellbags only under HKCU" {
+            $ExplorerBagPaths | Should -Not -BeNullOrEmpty
+            foreach ($p in $ExplorerBagPaths) {
+                $p | Should -BeLike 'HKCU:\*' -Because "$p is passed to Remove-Item -Recurse"
+                $p | Should -BeLike '*\Shell\Bag*' -Because "$p must name a shellbag tree, not a parent of one"
+            }
+        }
+
+        # Re-introducing this would be silent: every folder type still gets its
+        # template written, the run still reports success, and Downloads still sorts by
+        # Name because it is no longer typed as Downloads. Asserted against the source
+        # because the damage is a write that must NOT happen.
+        It "never pins FolderType, which would starve the Downloads template" {
+            $fn = $ast.FindAll({ param($n)
+                    $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                    $n.Name -eq 'Set-ExplorerDefaultView' }, $true) | Select-Object -First 1
+            $fn.Extent.Text | Should -Not -Match 'NotSpecified' -Because (
+                'pinning every folder to Generic stops Downloads reaching its own template')
+            $fn.Extent.Text | Should -Match 'Remove-ItemProperty[^\r\n]*FolderType' -Because (
+                'a previous version wrote it, so applying the new view has to undo that')
+        }
+
+        It "returns early when the view is already applied" {
+            $fn = $ast.FindAll({ param($n)
+                    $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                    $n.Name -eq 'Set-ExplorerDefaultView' }, $true) | Select-Object -First 1
+            $fn | Should -Not -BeNullOrEmpty
+
+            $first = $fn.Body.EndBlock.Statements | Select-Object -First 1
+            $first.Extent.Text | Should -Match 'Test-ExplorerDefaultView' -Because (
+                'without the guard, every run wipes the remembered folder views and restarts Explorer')
+            $first.Extent.Text | Should -Match 'return'
+        }
+
+        # The shell restart is the second half of the reset: explorer.exe writes its
+        # in-memory bags back as windows close, so a clear with the shell left running
+        # is undone by the time the user looks.
+        It "is followed by a shell restart at its call site" {
+            $call = $ast.FindAll({ param($n)
+                    $n -is [System.Management.Automation.Language.IfStatementAst] -and
+                    $n.Clauses[0].Item1.Extent.Text -match 'Set-ExplorerDefaultView' }, $true) |
+                Select-Object -First 1
+            $call | Should -Not -BeNullOrEmpty -Because 'the return value is what gates the restart'
+            $call.Clauses[0].Item2.Extent.Text | Should -Match 'Restart-Explorer'
+        }
+    }
+}
+
+# An AutoHotkey v2 install ships several AutoHotkey*.exe files. Two must never be
+# chosen to run the macros: the _UIA build exists to drive ELEVATED windows (the
+# opposite of the documented non-elevated launch) and AutoHotkeyUX.exe is the
+# launcher GUI, not an interpreter.
+Describe "Find-AhkExe picks the plain 64-bit interpreter" -Skip:(-not $IsWindowsHost) {
+    BeforeEach {
+        $script:saved = @{ Path = $env:Path; ProgramW6432 = $env:ProgramW6432 }
+        $script:box = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+        # Neutralise the PATH probe so only the Program Files scan is under test.
+        $env:Path = "$env:WINDIR\System32"
+        $env:ProgramW6432 = $script:box
+    }
+
+    AfterEach {
+        $env:Path = $script:saved.Path
+        $env:ProgramW6432 = $script:saved.ProgramW6432
+    }
+
+    It "skips the _UIA and UX builds and takes AutoHotkey64.exe" {
+        $v2 = Join-Path $box 'AutoHotkey\v2'
+        New-Item -ItemType Directory -Force -Path $v2, (Join-Path $box 'AutoHotkey\UX') | Out-Null
+        # Written in the order a real install enumerates them - _UIA before the plain
+        # build, which is what made the old sort pick the wrong one.
+        foreach ($n in 'AutoHotkey.exe', 'AutoHotkey32_UIA.exe', 'AutoHotkey32.exe',
+            'AutoHotkey64_UIA.exe', 'AutoHotkey64.exe') {
+            Set-Content -LiteralPath (Join-Path $v2 $n) -Value '' -Encoding Ascii
+        }
+        Set-Content -LiteralPath (Join-Path $box 'AutoHotkey\UX\AutoHotkeyUX.exe') -Value '' -Encoding Ascii
+
+        Find-AhkExe | Should -Be (Join-Path $v2 'AutoHotkey64.exe')
+    }
+
+    It "falls back to the 32-bit interpreter when no 64-bit build exists" {
+        $v2 = Join-Path $box 'AutoHotkey\v2'
+        New-Item -ItemType Directory -Force -Path $v2 | Out-Null
+        Set-Content -LiteralPath (Join-Path $v2 'AutoHotkey32_UIA.exe') -Value '' -Encoding Ascii
+        Set-Content -LiteralPath (Join-Path $v2 'AutoHotkey32.exe') -Value '' -Encoding Ascii
+
+        Find-AhkExe | Should -Be (Join-Path $v2 'AutoHotkey32.exe')
+    }
+
+    It "returns nothing when only non-interpreter executables are present" {
+        $ux = Join-Path $box 'AutoHotkey\UX'
+        New-Item -ItemType Directory -Force -Path $ux | Out-Null
+        Set-Content -LiteralPath (Join-Path $ux 'AutoHotkeyUX.exe') -Value '' -Encoding Ascii
+
+        Find-AhkExe | Should -BeNullOrEmpty
+    }
+}
+
 # Show-Checklist derives each default app's friendly name from its WingetId via the
 # package lists and $PKG_ALIAS, so a rename/typo there shows a raw id (or nothing).
 # Membership is computed at discovery so each id gets its own named test.
@@ -233,71 +640,353 @@ Describe "Default-app / package-list consistency" {
     }
 }
 
-# The script is meant to survive Constrained Language Mode (WDAC/AppLocker): the .NET-
-# backed steps (Add-Type/P-Invoke, the file-association tamper-hash, the Premiere prefs
-# byte write) are gated on $CLM and degrade to "skipped" instead of crashing. These
-# guard that contract so a future edit can't quietly reintroduce an unguarded .NET call.
+# The script is meant to survive Constrained Language Mode (WDAC/AppLocker): the
+# .NET- backed steps (Add-Type/P-Invoke, the file-association tamper-hash, the
+# Premiere prefs byte write) are gated on $CLM and degrade to "skipped" instead
+# of crashing. These guard that contract so a future edit can't quietly
+# reintroduce an unguarded .NET call.
+#
+# Two independent angles, because neither alone is enough:
+#   - static: the CLM-blocked .NET in the script is unreachable while $CLM is
+#     true (covers the apply paths, which a test run must not actually execute)
+#   - runtime: a real child shell forced into ConstrainedLanguage loads and
+#     dry-runs the script with no language-mode error on its error stream
+#
+# Both angles carry a canary test that plants a deliberate violation and asserts
+# the check FAILS on it.
 Describe "Constrained Language Mode resilience" {
     BeforeAll {
         $script:srcPath = (Resolve-Path "$PSScriptRoot/../src/load-win.ps1").Path
-    }
 
-    # Add-Type is the gateway to every P/Invoke in the script and is unconditionally
-    # blocked under CLM, so each call must live inside an `if (-not $CLM) { ... }` block.
-    # Walks the AST (not the text) so reformatting can't fool it.
-    It 'every Add-Type call is gated behind "if (-not $CLM)"' {
-        $ast = [System.Management.Automation.Language.Parser]::ParseFile($srcPath, [ref]$null, [ref]$null)
-        $addTypes = $ast.FindAll({ param($n)
-                $n -is [System.Management.Automation.Language.CommandAst] -and
-                $n.GetCommandName() -eq 'Add-Type' }, $true)
-        $addTypes | Should -Not -BeNullOrEmpty -Because 'the guard is meaningless if it finds no Add-Type calls to check'
+        # The CLM entrypoint in the .EXAMPLE header hands the file to
+        # `powershell`, so Windows PowerShell 5.1 is the shell that actually
+        # meets CLM in production - test there rather than in pwsh. Off Windows
+        # there is only pwsh. ($IsWindowsHost is a discovery-scope variable, so
+        # it is recomputed here for the run phase - see the note on its
+        # definition at the top of this file.)
+        $onWindows = (-not (Test-Path Variable:IsWindows)) -or $IsWindows
+        $ps51 = "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe"
+        $script:clmShell = if ($onWindows -and (Test-Path $ps51)) { $ps51 } else { 'pwsh' }
 
-        $unguarded = foreach ($c in $addTypes) {
-            $guarded = $false
-            $p = $c.Parent
-            while ($p) {
-                if ($p -is [System.Management.Automation.Language.IfStatementAst]) {
-                    foreach ($clause in $p.Clauses) {
-                        if ($clause.Item1.Extent.Text -match '-not\s+\$CLM') { $guarded = $true }
-                    }
-                }
-                $p = $p.Parent
+        # --- runtime harness ------------------------------------------------
+        # Runs $Path in a child shell forced into ConstrainedLanguage and
+        # reports what happened. Returns the language mode the child actually
+        # reached (a positive control: if the assignment ever stops taking, the
+        # whole Describe would go vacuous silently), whether the child ran to
+        # completion, its exit code, and its error stream.
+        #
+        # Limitation worth knowing: this sees only errors that reach stderr, so
+        # a CLM violation inside one of the script's `try { } catch { }` blocks
+        # stays invisible here. That is what the static angle below is for.
+        function Invoke-UnderClm {
+            param([string]$Path, [string]$Arguments = '', [string]$Prologue = '')
+
+            $out = Join-Path $TestDrive "clm-$([guid]::NewGuid().ToString('N')).out"
+            $err = [System.IO.Path]::ChangeExtension($out, '.err')
+            $cmd = @(
+                "`$ExecutionContext.SessionState.LanguageMode='ConstrainedLanguage'"
+                "'ZZ-MODE=' + `$ExecutionContext.SessionState.LanguageMode"
+                $Prologue
+                "& '$Path' $Arguments"
+                "'ZZ-DONE'"
+            ) | Where-Object { $_ }
+            $cmd = $cmd -join '; '
+
+            & $script:clmShell -NoProfile -Command $cmd 1> $out 2> $err
+            $exit = $LASTEXITCODE
+
+            $stdout = (Get-Content $out -Raw -ErrorAction SilentlyContinue) + ''
+            $stderr = (Get-Content $err -Raw -ErrorAction SilentlyContinue) + ''
+            [pscustomobject]@{
+                Mode       = if ($stdout -match 'ZZ-MODE=(\w+)') { $Matches[1] } else { '<none>' }
+                Completed  = $stdout -match 'ZZ-DONE'
+                ExitCode   = $exit
+                Stderr     = $stderr
+                # Every engine refusal ends "... in this language mode"; the
+                # FullyQualifiedErrorId form is matched too for the views that
+                # print it.
+                Violations = @([regex]::Matches($stderr, '(?m)^.*(in this language mode|ConstrainedLanguage).*$') |
+                        ForEach-Object { $_.Value.Trim() })
             }
-            if (-not $guarded) { "line $($c.Extent.StartLineNumber)" }
         }
-        @($unguarded) | Should -BeNullOrEmpty -Because (
-            "Add-Type runs only outside CLM - wrap it in 'if (-not `$CLM)'. Unguarded at: $($unguarded -join ', ')")
+
+        # Asserts the three things every CLM run must satisfy, with the child's
+        # own error text in the failure message.
+        function Assert-ClmSurvived($result, [string]$what) {
+            $result.Mode | Should -Be 'ConstrainedLanguage' -Because (
+                "the child never entered CLM, so '$what' proved nothing (mode: $($result.Mode))")
+            $result.Violations | Should -BeNullOrEmpty -Because (
+                "$what hit a language-mode block:`n$($result.Violations -join "`n")")
+            $result.Completed | Should -BeTrue -Because (
+                "$what did not run to completion under CLM:`n$($result.Stderr)")
+        }
     }
 
     # Sourcing the script as a library must not execute any CLM-blocked .NET at module
     # scope (the $CLM probe itself, the top-level statements). Cross-platform.
     It "loads as a library under Constrained Language Mode" {
-        $cmd = "`$ExecutionContext.SessionState.LanguageMode='ConstrainedLanguage'; `$env:LOAD_LIB='1'; . '$srcPath'"
-        & pwsh -NoProfile -Command $cmd *> $null
-        $LASTEXITCODE | Should -Be 0 -Because 'a CLM-blocked call at module scope would terminate the load'
+        $r = Invoke-UnderClm -Path $srcPath -Prologue "`$env:LOAD_LIB='1'"
+        Assert-ClmSurvived $r 'sourcing the script as a library'
+        $r.ExitCode | Should -Be 0
     }
 
     # End-to-end smoke: a --dry-run (preview + full checklist) must complete under CLM
     # without a language-mode violation. Windows-only - the checklist reads HKCU/HKLM,
     # which don't exist on other platforms.
     It "a --dry-run completes under Constrained Language Mode" -Skip:(-not $IsWindowsHost) {
-        $errFile = Join-Path $TestDrive "clm-dryrun.err"
-        $cmd = "`$ExecutionContext.SessionState.LanguageMode='ConstrainedLanguage'; & '$srcPath' --dry-run"
-        & pwsh -NoProfile -Command $cmd 1> $null 2> $errFile
-        $stderr = Get-Content $errFile -Raw
-        if (-not $stderr) { $stderr = "" }
-        $LASTEXITCODE | Should -Be 0 -Because "the dry-run threw under CLM: $stderr"
-        $stderr | Should -Not -Match 'ConstrainedLanguage' -Because "a CLM violation surfaced: $stderr"
+        $r = Invoke-UnderClm -Path $srcPath -Arguments '--dry-run'
+        Assert-ClmSurvived $r 'a --dry-run'
+        $r.ExitCode | Should -Be 0
+    }
+
+    # Canary: proves the harness above can actually fail. Without this, a change
+    # to the error view, the shell, or the match pattern turns every runtime
+    # test in this block green-forever.
+    It "the runtime harness detects a planted language-mode violation" {
+        $canary = Join-Path $TestDrive 'clm-canary.ps1'
+        Set-Content -LiteralPath $canary -Encoding Ascii -Value @'
+$ErrorActionPreference = "Continue"
+$null = [System.Environment]::GetEnvironmentVariable("Path", "User")
+'@
+        $r = Invoke-UnderClm -Path $canary
+
+        $r.Mode | Should -Be 'ConstrainedLanguage'
+        $r.Violations | Should -Not -BeNullOrEmpty -Because 'a blocked static call must be reported'
+        # The two signals the old test relied on, shown to be worthless on their own.
+        $r.ExitCode | Should -Be 0 -Because 'a CLM violation is non-terminating - exit code cannot detect it'
+        $r.Completed | Should -BeTrue -Because 'execution continues past the violation'
     }
 }
 
-# Fast mode (--fast) must never trigger UAC: it applies only per-user config (HKCU
-# writes, file drops into the user's profile, a non-elevated AHK launch). The script's
-# single elevation point is `Start-Process ... -Verb RunAs` in Invoke-ElevatedInstall,
-# reached only via Invoke-SlowPass (the $FULL pass). These walk the AST (not the text,
-# and no sourcing - the installer functions live below the $env:LOAD_LIB boundary) to
-# prove a fast run can't reach it, so a refactor can't quietly add an elevated step to
-# the fast path or sneak in a second RunAs.
+# The static half of the CLM contract. A dry run exercises only the preview
+# paths, so the code that actually applies settings (prefs writes, the
+# file-association tamper-hash, the P/Invoke broadcasts) can only be checked by
+# reading it - a test must not run it on a real machine. This walks the call
+# graph to find what could execute while $CLM is true, then checks that none of
+# it touches .NET the engine would refuse.
+Describe "Constrained Language Mode static reachability" {
+    BeforeAll {
+        $script:srcPath = (Resolve-Path "$PSScriptRoot/../src/load-win.ps1").Path
+
+        # Types confirmed callable in ConstrainedLanguage on Windows PowerShell
+        # 5.1. To re-derive after a Windows change, run the expression in a
+        # child shell with LanguageMode set to ConstrainedLanguage and see
+        # whether it throws; anything not listed here is treated as blocked, so
+        # the list only ever needs widening when a genuinely-safe call trips
+        # this test.
+        $script:clmSafeTypes = '^(regex|System\.Text\.RegularExpressions\.Regex|IntPtr|System\.IntPtr|' +
+        'datetime|System\.DateTime|System\.Console|System\.StringComparison|bool|string|int|long|byte)$'
+
+        # True when $node cannot execute while $CLM is true. Three gating shapes
+        # are in use in the script, and all three have to be understood or this
+        # reports noise:
+        #   1. `if (-not $CLM) { ... }`  - the node sits in that clause's body
+        #   2. `... elseif ($CLM) { skip } elseif (...) { node }`
+        #                               - an earlier clause peeled off the CLM case
+        #   3. `function F { if ($CLM) { return } ... }`
+        #                               - an early return covers the whole body
+        # Containment is by extent offsets, so a node in the ELSE of `if (-not
+        # $CLM)` is correctly seen as ungated - the previous version matched any
+        # clause of the enclosing if-statement and so called that case guarded.
+        function Test-ClmGated($node) {
+            $p = $node.Parent
+            while ($p) {
+                if ($p -is [System.Management.Automation.Language.IfStatementAst]) {
+                    foreach ($clause in $p.Clauses) {
+                        $cond = $clause.Item1.Extent.Text
+                        $body = $clause.Item2.Extent
+                        $inBody = $body.StartOffset -le $node.Extent.StartOffset -and
+                        $node.Extent.EndOffset -le $body.EndOffset
+                        if ($cond -match '-not\s+\$CLM' -and $inBody) { return $true }
+                        if ($cond -match '^\s*\$CLM\s*$' -and $node.Extent.StartOffset -gt $body.EndOffset) { return $true }
+                    }
+                }
+                if ($p -is [System.Management.Automation.Language.FunctionDefinitionAst]) {
+                    $first = $p.Body.EndBlock.Statements | Select-Object -First 1
+                    if ($first -is [System.Management.Automation.Language.IfStatementAst] -and
+                        $first.Clauses[0].Item1.Extent.Text -match '^\s*\$CLM\s*$' -and
+                        $first.Clauses[0].Item2.Extent.Text -match 'return') { return $true }
+                    return $false   # function scope is the ceiling - callers are the graph's job
+                }
+                $p = $p.Parent
+            }
+            return $false
+        }
+
+        function Get-EnclosingFunction($node) {
+            $p = $node.Parent
+            while ($p) {
+                if ($p -is [System.Management.Automation.Language.FunctionDefinitionAst]) { return $p.Name }
+                $p = $p.Parent
+            }
+            return $null
+        }
+
+        # Returns every CLM-blocked .NET construct that can run while $CLM is
+        # true, as "line N  what  [fn=F]" strings. Takes a path so the canary
+        # test can point it at a planted violation and prove it fires.
+        function Get-ClmReachableDotNet([string]$Path) {
+            $ast = [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$null, [ref]$null)
+
+            $funcs = @{}
+            $ast.FindAll({ param($n)
+                    $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) |
+                ForEach-Object { $funcs[$_.Name] = $_ }
+
+            # Reachability from the script's top level, refusing to traverse
+            # call sites that are themselves CLM-gated. A function is "live" if
+            # some ungated chain of calls reaches it.
+            $live = New-Object 'System.Collections.Generic.HashSet[string]'
+            $stack = New-Object 'System.Collections.Generic.Stack[string]'
+            $allCalls = $ast.FindAll({ param($n)
+                    $n -is [System.Management.Automation.Language.CommandAst] }, $true)
+
+            foreach ($c in $allCalls) {
+                if ($null -ne (Get-EnclosingFunction $c)) { continue }   # top-level calls seed the walk
+                $n = $c.GetCommandName()
+                if ($n -and $funcs.ContainsKey($n) -and -not (Test-ClmGated $c) -and $live.Add($n)) { $stack.Push($n) }
+            }
+            while ($stack.Count) {
+                $name = $stack.Pop()
+                foreach ($c in $funcs[$name].Body.FindAll({ param($n)
+                            $n -is [System.Management.Automation.Language.CommandAst] }, $true)) {
+                    $callee = $c.GetCommandName()
+                    if ($callee -and $funcs.ContainsKey($callee) -and -not (Test-ClmGated $c) -and $live.Add($callee)) {
+                        $stack.Push($callee)
+                    }
+                }
+            }
+
+            # Add-Type and New-Object are refused outright for non-core types; a
+            # static method call is refused unless the type is one of the core
+            # ones.
+            $suspects = $ast.FindAll({ param($n)
+                    ($n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and $n.Static) -or
+                    ($n -is [System.Management.Automation.Language.CommandAst] -and
+                    $n.GetCommandName() -in @('Add-Type', 'New-Object')) }, $true)
+
+            foreach ($n in $suspects) {
+                if ($n -is [System.Management.Automation.Language.InvokeMemberExpressionAst]) {
+                    $type = $n.Expression.TypeName.FullName
+                    if ($type -match $script:clmSafeTypes) { continue }
+                    $what = "$type::$($n.Member.Value)"
+                }
+                else { $what = $n.GetCommandName() }
+
+                $fn = Get-EnclosingFunction $n
+                $reachable = if ($null -eq $fn) { -not (Test-ClmGated $n) } else { $live.Contains($fn) -and -not (Test-ClmGated $n) }
+                if ($reachable) { "line $($n.Extent.StartLineNumber)  $what  [fn=$(if ($fn) { $fn } else { '<top level>' })]" }
+            }
+        }
+    }
+
+    It "no CLM-blocked .NET is reachable while `$CLM is true" {
+        $found = @(Get-ClmReachableDotNet $srcPath)
+        $found | Should -BeNullOrEmpty -Because (
+            "these run under CLM and the engine will refuse them - gate them on `$CLM:`n$($found -join "`n")")
+    }
+
+    # The analysis is only as good as its ability to say no. Each canary is a
+    # shape the script actually uses, so a refactor that breaks one of the three
+    # gate forms shows up here as a false-clean rather than passing unnoticed.
+    It "the analysis flags <Name>" -ForEach @(
+        @{ Name = 'an ungated Add-Type'; Body = 'Add-Type -TypeDefinition "public class Z {}"' }
+        @{ Name = 'an ungated static .NET call'; Body = '[System.IO.File]::ReadAllBytes("x")' }
+        @{ Name = 'an ungated New-Object'; Body = 'New-Object System.Security.Cryptography.SHA256Managed' }
+        @{ Name = 'a call in the ELSE of "if (-not $CLM)"'; Body = 'if (-not $CLM) { "ok" } else { Add-Type -TypeDefinition "public class Z {}" }' }
+        @{ Name = 'a violation behind an ungated function call'; Body = "function Get-Thing { [System.IO.File]::ReadAllBytes('x') }`nGet-Thing" }
+    ) {
+        $canary = Join-Path $TestDrive "canary-$([guid]::NewGuid().ToString('N')).ps1"
+        Set-Content -LiteralPath $canary -Encoding Ascii -Value "`$CLM = `$true`n$Body`n"
+        @(Get-ClmReachableDotNet $canary) | Should -Not -BeNullOrEmpty
+    }
+
+    # The mirror of the above: the gate forms the script relies on must read as
+    # safe, or the test becomes noise a maintainer learns to ignore.
+    It "the analysis accepts <Name>" -ForEach @(
+        @{ Name = 'a call inside "if (-not $CLM)"'; Body = 'if (-not $CLM) { Add-Type -TypeDefinition "public class Z {}" }' }
+        @{ Name  = 'a function behind an "if ($CLM) { return }" guard'
+            Body = "function Set-Thing { if (`$CLM) { return }`n[System.IO.File]::ReadAllBytes('x') }`nSet-Thing"
+        }
+        @{ Name  = 'an elseif branch after an "elseif ($CLM)" skip'
+            Body = "if (`$false) { 'a' } elseif (`$CLM) { 'skip' } else { [System.IO.File]::ReadAllBytes('x') }"
+        }
+    ) {
+        $canary = Join-Path $TestDrive "canary-$([guid]::NewGuid().ToString('N')).ps1"
+        Set-Content -LiteralPath $canary -Encoding Ascii -Value "`$CLM = `$true`n$Body`n"
+        @(Get-ClmReachableDotNet $canary) | Should -BeNullOrEmpty
+    }
+}
+
+# Two whole-script contracts that are easiest to state over the AST, since the
+# code they cover sits below the $env:LOAD_LIB library boundary and cannot be
+# sourced.
+Describe "whole-script invariants" {
+    BeforeAll {
+        $script:srcPath = (Resolve-Path "$PSScriptRoot/../src/load-win.ps1").Path
+        $script:ast = [System.Management.Automation.Language.Parser]::ParseFile($srcPath, [ref]$null, [ref]$null)
+    }
+
+    # `winget list --id X` filters on a SUBSTRING, and the caller then does an
+    # unanchored regex over the output, so without --exact both halves agree on
+    # the wrong answer: with only MediaInfo GUI installed, "MediaArea.MediaInfo"
+    # matches "MediaArea.MediaInfo.GUI" and the separately-listed CLI package
+    # reads as already installed and never gets installed. It is loose enough
+    # that a nonexistent id ("VideoLAN.VL") also comes back true.
+    It "every 'winget list' query is --exact" {
+        $lists = $ast.FindAll({ param($n)
+                $n -is [System.Management.Automation.Language.CommandAst] -and
+                $n.GetCommandName() -eq 'winget' -and
+                $n.CommandElements.Count -gt 1 -and
+                $n.CommandElements[1].Extent.Text -eq 'list' }, $true)
+        $lists | Should -Not -BeNullOrEmpty -Because 'the guard is meaningless with no winget list call to check'
+
+        $loose = foreach ($c in $lists) {
+            if ($c.Extent.Text -notmatch '--exact') { "line $($c.Extent.StartLineNumber)" }
+        }
+        @($loose) | Should -BeNullOrEmpty -Because (
+            "a substring match reports the wrong package as installed. Missing --exact at: $($loose -join ', ')")
+    }
+
+    # --dry-run is a preview and must not touch the disk, and the test suite
+    # sources this file as a library - so nothing at module scope (above the
+    # $env:LOAD_LIB return) may write. Creating the work dir there did both.
+    It "no filesystem write runs at module scope" {
+        $guard = $ast.FindAll({ param($n)
+                $n -is [System.Management.Automation.Language.IfStatementAst] -and
+                $n.Clauses[0].Item1.Extent.Text -match 'env:LOAD_LIB' }, $true) | Select-Object -First 1
+        $guard | Should -Not -BeNullOrEmpty -Because 'the library boundary is what makes module scope testable'
+
+        $writers = 'New-Item', 'Set-Content', 'Add-Content', 'Out-File', 'Remove-Item',
+        'Copy-Item', 'Move-Item', 'Set-ItemProperty', 'New-ItemProperty', 'curl.exe',
+        'Expand-Archive', 'Start-Process'
+
+        $offenders = foreach ($c in $ast.FindAll({ param($n)
+                    $n -is [System.Management.Automation.Language.CommandAst] }, $true)) {
+            # Module scope = before the guard and not nested inside a function.
+            if ($c.Extent.StartOffset -ge $guard.Extent.StartOffset) { continue }
+            $p = $c.Parent; $inFunc = $false
+            while ($p) {
+                if ($p -is [System.Management.Automation.Language.FunctionDefinitionAst]) { $inFunc = $true; break }
+                $p = $p.Parent
+            }
+            if (-not $inFunc -and $c.GetCommandName() -in $writers) {
+                "line $($c.Extent.StartLineNumber): $($c.GetCommandName())"
+            }
+        }
+        @($offenders) | Should -BeNullOrEmpty -Because (
+            "sourcing the script and --dry-run must both be side-effect free; found: $($offenders -join ', ')")
+    }
+}
+
+# Fast mode (--fast) must never trigger UAC: it applies only per-user config
+# (HKCU writes, file drops into the user's profile, a non-elevated AHK launch).
+# The script's single elevation point is `Start-Process ... -Verb RunAs` in
+# Invoke-ElevatedInstall, reached only via Invoke-SlowPass (the $FULL pass).
+# These walk the AST (not the text, and no sourcing - the installer functions
+# live below the $env:LOAD_LIB boundary) to prove a fast run can't reach it, so
+# a refactor can't quietly add an elevated step to the fast path or sneak in a
+# second RunAs.
 Describe "fast mode requests no elevation (no UAC)" {
     BeforeAll {
         $srcPath = (Resolve-Path "$PSScriptRoot/../src/load-win.ps1").Path
@@ -470,7 +1159,21 @@ Describe "Get-WorkspaceName (Premiere <Version>)" -ForEach $PremiereVersions {
     # DON'T meet in production. Assert the CRLF shape too, and that no \r leaks
     # into the name: it gets copied into the prefs as element text, so the
     # extractor must return the field and nothing else, whatever EOLs the
-    # surrounding file uses.
+    # surrounding file uses. Premiere writes these UTF-8 with no BOM, and
+    # Windows PowerShell 5.1 decodes a BOM-less file with the ANSI code page. A
+    # workspace name with an accent then comes back mojibaked and is copied into
+    # the prefs as LastWorkspaceName, naming a workspace that does not exist.
+    # Guards the explicit -Encoding UTF8 on the read.
+    It "reads a non-ASCII workspace name without mojibake" {
+        $utf8 = Join-Path $TestDrive "ws_utf8_$Dir.xml"
+        [System.IO.File]::WriteAllText(
+            $utf8,
+            "<root>`r`n<key>UserName</key><ustring>Edicion Camara</ustring>`r`n</root>`r`n".Replace('Edicion Camara', "Edici$([char]0xF3)n C$([char]0xE1)mara"),
+            (New-Object System.Text.UTF8Encoding $false))
+
+        Get-WorkspaceName $utf8 | Should -Be "Edici$([char]0xF3)n C$([char]0xE1)mara"
+    }
+
     It "extracts the UserName from a CRLF workspace" {
         $lf = Get-Content -LiteralPath "$PSScriptRoot/fixtures/$Dir/UserWorkspace_truncated.xml" -Raw
         $crlf = Join-Path $TestDrive "ws_crlf_$Dir.xml"
@@ -532,9 +1235,9 @@ Describe "ConvertTo-CrlfFile (Premiere <Version>)" -ForEach $PremiereVersions {
     }
 }
 
-# Set-PrefNode is the engine under Set-PremierePro. Its "no edit = no corruption"
-# contract (a missing node must leave the file byte-for-byte untouched) is the
-# safety guarantee the rest of the prefs handling relies on.
+# Set-PrefNode is the engine under Set-PremierePro. Its "no edit = no
+# corruption" contract (a missing node must leave the file byte-for-byte
+# untouched) is the safety guarantee the rest of the prefs handling relies on.
 Describe "Set-PrefNode" {
     BeforeEach {
         $script:prefs = Join-Path $TestDrive "node-prefs"
@@ -548,10 +1251,11 @@ Describe "Set-PrefNode" {
         Get-Content $prefs -Raw | Should -Match '<x>new</x>'
     }
 
-    # Enforces the "do not reimplement with Set-Content/Out-File" note on Set-PrefNode:
-    # those would normalise the WHOLE file as a side effect of changing one value.
-    # Uses a CRLF file because that is the shape a normaliser would visibly destroy,
-    # and because it proves the installer cannot be what re-ended a user's prefs.
+    # Enforces the "do not reimplement with Set-Content/Out-File" note on
+    # Set-PrefNode: those would normalise the WHOLE file as a side effect of
+    # changing one value. Uses a CRLF file because that is the shape a
+    # normaliser would visibly destroy, and because it proves the installer
+    # cannot be what re-ended a user's prefs.
     It "preserves the file's line endings" {
         $enc = New-Object System.Text.UTF8Encoding $false
         [System.IO.File]::WriteAllText($prefs, "<root>`r`n<x>old</x>`r`n</root>`r`n", $enc)
@@ -570,13 +1274,14 @@ Describe "Set-PrefNode" {
     }
 }
 
-# Test-AppInstalled gates the non-winget installers, so a false negative reinstalls
-# Flicker Free and Mister Horse on every single run. Uninstall entries live in a
-# per-machine 64-bit view, a per-machine 32-bit view and a per-user one, and a 32-bit
-# PowerShell host reads HKLM:\SOFTWARE through WOW64 redirection - both per-machine
-# provider paths collapse onto the 32-bit view - so the lookup has to name the view.
-# Registry-backed end to end (HKCU: provider + reg.exe), so it is Windows-only:
-# skipped at Describe level because even the BeforeAll probe needs the HKCU drive.
+# Test-AppInstalled gates the non-winget installers, so a false negative
+# reinstalls Flicker Free and Mister Horse on every single run. Uninstall
+# entries live in a per-machine 64-bit view, a per-machine 32-bit view and a
+# per-user one, and a 32-bit PowerShell host reads HKLM:\SOFTWARE through WOW64
+# redirection - both per-machine provider paths collapse onto the 32-bit view -
+# so the lookup has to name the view. Registry-backed end to end (HKCU: provider
+# + reg.exe), so it is Windows-only: skipped at Describe level because even the
+# BeforeAll probe needs the HKCU drive.
 Describe "Test-AppInstalled" -Skip:(-not $IsWindowsHost) {
     BeforeAll {
         # A per-user entry needs no elevation and isn't WOW64-redirected, so it
@@ -600,10 +1305,11 @@ Describe "Test-AppInstalled" -Skip:(-not $IsWindowsHost) {
         Test-AppInstalled 'ZZ No Such Application 4f2c9e' | Should -BeFalse
     }
 
-    # The regression itself: a 64-bit-only per-machine entry (Flicker Free registers
-    # one) read from a 32-bit host, which is where the redirected provider paths used
-    # to report "not installed" forever. Writing under HKLM needs elevation, so this
-    # runs on CI and on an elevated dev shell, and skips otherwise.
+    # The regression itself: a 64-bit-only per-machine entry (Flicker Free
+    # registers one) read from a 32-bit host, which is where the redirected
+    # provider paths used to report "not installed" forever. Writing under HKLM
+    # needs elevation, so this runs on CI and on an elevated dev shell, and
+    # skips otherwise.
     It "finds a 64-bit-only per-machine entry from a 32-bit host" -Skip:(-not ($IsElevatedHost -and $Ps32Available)) {
         $key = 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\ZZLoadWinPesterProbe64'
         $name = 'ZZ Load-Win Pester Probe 64'
@@ -628,11 +1334,11 @@ if (Test-AppInstalled '$name') { 'FOUND' } else { 'MISSING' }
     }
 }
 
-# Find-UvExe picks the uv that the uv-tool installs are invoked through. It has to
-# return exactly one path: an array is truthy, so it would skip the fallback list
-# below it, and it can't be invoked with & either.
-# Resolves uv.exe through Windows PATH and winget shim layouts (';' separator,
-# %LOCALAPPDATA% shims), so the semantics under test only exist on Windows.
+# Find-UvExe picks the uv that the uv-tool installs are invoked through. It has
+# to return exactly one path: an array is truthy, so it would skip the fallback
+# list below it, and it can't be invoked with & either. Resolves uv.exe through
+# Windows PATH and winget shim layouts (';' separator, %LOCALAPPDATA% shims), so
+# the semantics under test only exist on Windows.
 Describe "Find-UvExe" -Skip:(-not $IsWindowsHost) {
     BeforeAll {
         function New-FakeUv($dir) {
@@ -686,8 +1392,9 @@ Describe "Find-UvExe" -Skip:(-not $IsWindowsHost) {
         Find-UvExe | Should -Be $shim
     }
 
-    # $env:ProgramFiles reads as the x86 directory under a 32-bit host, which would
-    # never match a machine-scope install; ProgramW6432 names the 64-bit one from both.
+    # $env:ProgramFiles reads as the x86 directory under a 32-bit host, which
+    # would never match a machine-scope install; ProgramW6432 names the 64-bit
+    # one from both.
     It "resolves the machine-scope candidate under the 64-bit Program Files" {
         $machine = New-FakeUv (Join-Path $env:ProgramW6432 'WinGet\Links')
         Find-UvExe | Should -Be $machine

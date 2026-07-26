@@ -18,52 +18,123 @@ $ErrorActionPreference = "Continue"
 
 Set-StrictMode -Version Latest
 
-# Constrained Language Mode (enforced by WDAC/AppLocker) blocks Add-Type, P/Invoke,
-# crypto and most .NET method calls. Steps that need those degrade to a clean
-# "skipped (CLM)".
+# Constrained Language Mode (enforced by WDAC/AppLocker) blocks Add-Type,
+# P/Invoke, crypto and most .NET method calls. Steps that need those degrade to
+# a clean "skipped (CLM)".
 $CLM = $ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage'
 
-$WorkDir = "$HOME\Downloads\load-win"
-New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
+# Get-ProgramFiles64 - the 64-bit Program Files, named correctly from a host of
+# either bitness. $env:ProgramFiles reads as the x86 directory under a 32-bit
+# PowerShell (the SysWOW64 host), where a machine-scope 64-bit install would never be
+# found; ProgramW6432 names the real one from both. It's empty on 32-bit Windows,
+# hence the fallback. A function rather than a constant so it re-reads the
+# environment at each call.
+function Get-ProgramFiles64 {
+    if ($env:ProgramW6432) { return $env:ProgramW6432 }
+    return $env:ProgramFiles
+}
 
-# AHK macros live in the work dir - the user double-clicks the script after rebooting to activate it.
+# Get-RegValue <path> <name> - the value, or $null when the key or the value is absent.
+#
+# -ErrorAction on Get-ItemProperty is not enough by itself. Under
+# Set-StrictMode -Version Latest, dotting a property that isn't there is ITSELF an
+# error, so `(Get-ItemProperty ... -Name X -EA SilentlyContinue).X` still fails on a
+# missing value - and because it fails mid-assignment the variable is left UNDEFINED,
+# so the next read of it throws a second time. Two red errors per lookup, on exactly
+# the fresh profile this script exists to set up: no Keyboard Layout\Toggle yet, and
+# no UserChoice for a file type nothing has claimed. Select-Object does the lookup
+# inside the cmdlet, where a missing property is an ordinary error it can swallow.
+function Get-RegValue($path, $name) {
+    Get-ItemProperty -LiteralPath $path -Name $name -ErrorAction SilentlyContinue |
+        Select-Object -ExpandProperty $name -ErrorAction SilentlyContinue
+}
+
+# Get-UserFolder <name> <fallback> - resolve a Windows known folder from the registry.
+#
+# "$HOME\Documents" is a macOS habit that does not survive the trip. Windows lets
+# Documents and Downloads live anywhere, and OneDrive's "Back up this PC's folders" -
+# offered on by default through Windows 11 setup - relocates them under
+# %USERPROFILE%\OneDrive without changing $HOME. Premiere writes its profile into the
+# REAL Documents folder, so guessing wrong makes the whole Premiere step silently
+# no-op on a machine that looks completely ordinary. $HOME is doubly unsafe on a
+# domain PC, where PowerShell builds it from HOMEDRIVE/HOMEPATH and it can resolve to
+# a mapped network drive.
+#
+# User Shell Folders is the authority. PowerShell expands its REG_EXPAND_SZ values on
+# read, and unlike [Environment]::GetFolderPath the read still works under CLM.
+#
+# $key is injectable so the resolution and both fallbacks can be unit-tested against a
+# probe key, the way Remove-SelfTemp takes its path/temp.
+function Get-UserFolder {
+    param(
+        $name,
+        $fallback,
+        $key = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders"
+    )
+    $path = Get-RegValue $key $name
+    # A recorded folder that no longer exists (a detached OneDrive, an unmapped drive)
+    # is worse than the profile-relative guess, so it falls back too.
+    if ($path -and (Test-Path -LiteralPath $path)) { return $path }
+    return $fallback
+}
+
+$DocumentsDir = Get-UserFolder 'Personal' "$HOME\Documents"
+$DownloadsDir = Get-UserFolder '{374DE290-123F-4565-9164-39C4925E467B}' "$HOME\Downloads"
+$PremiereDir = Join-Path $DocumentsDir "Adobe\Premiere Pro"
+
+# Created by the dispatch block rather than here: this file is also sourced as a
+# library by the tests, and --dry-run is a preview that must not touch the disk.
+$WorkDir = Join-Path $DownloadsDir "load-win"
+
+# AHK macros live in the work dir - the user double-clicks the script after
+# rebooting to activate it.
 $AhkScript = Join-Path $WorkDir "MacKeyboard_LGG.ahk"
 
-# Find-AhkExe - locate an installed AutoHotkey interpreter, or return $null. Used
-# both to preview (is AutoHotkey present?) and to run the macros.
+# Find-AhkExe - locate an installed AutoHotkey interpreter, or return $null.
+# Used both to preview (is AutoHotkey present?) and to run the macros.
+#
+# The name filter matters as much as the sort. An AutoHotkey v2 install ships
+# several executables next to the interpreter, and a bare "AutoHotkey*.exe"
+# match picks up two kinds we must not launch scripts with: AutoHotkey64_UIA.exe
+# the UI Access build, which exists precisely to drive ELEVATED windows - the
+# opposite of the non-elevated launch Install-AhkScript documents, and it sorted
+# first here AutoHotkeyUX.exe      the launcher/dash GUI, not an interpreter at
+# all So match the interpreter names exactly, then prefer the 64-bit build
+# ($false sorts before $true, so "contains 64" comes first).
 function Find-AhkExe {
     $exe = Get-Command AutoHotkey.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
     if (-not $exe) {
         $exe = Get-ChildItem `
-            "$env:ProgramFiles\AutoHotkey", `
+            "$(Get-ProgramFiles64)\AutoHotkey", `
             "${env:ProgramFiles(x86)}\AutoHotkey" `
             -Recurse -Filter "AutoHotkey*.exe" -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '^AutoHotkey(32|64)?\.exe$' } |
             Sort-Object { $_.Name -notmatch '64' } |
             Select-Object -First 1 -ExpandProperty FullName
     }
     return $exe
 }
 
-# Find-UvExe - locate the uv executable, or return $null. We invoke uv by full path so
-# the uv-tool installs don't depend on the session PATH having refreshed after winget
-# installed it - which is unreliable under CLM, where %vars% in the registry PATH can't
-# be expanded. Checks PATH first, then winget's usual install/shim locations.
+# Find-UvExe - locate the uv executable, or return $null. We invoke uv by full
+# path so the uv-tool installs don't depend on the session PATH having refreshed
+# after winget installed it - which is unreliable under CLM, where %vars% in the
+# registry PATH can't be expanded. Checks PATH first, then winget's usual
+# install/shim locations.
 #
-# Get-Command returns one result per PATH directory holding uv.exe, so -First 1 (PATH
-# order - the copy the shell itself would run) keeps a second install, from pip/scoop or
-# from "uv self update" seeding ~\.local\bin, out of $exe as an array: that array is
-# truthy, so it would skip the fallbacks below, and it can't be invoked with & either.
-# ProgramW6432 names the 64-bit Program Files from a host of either bitness, where
-# $env:ProgramFiles reads as the x86 dir under a 32-bit host and would never match a
-# machine-scope install; it's empty on 32-bit Windows, hence the fallback.
+# Get-Command returns one result per PATH directory holding uv.exe, so -First 1
+# (PATH order - the copy the shell itself would run) keeps a second install,
+# from pip/scoop or from "uv self update" seeding ~\.local\bin, out of $exe as
+# an array: that array is truthy, so it would skip the fallbacks below, and it
+# can't be invoked with & either. The machine-scope candidate is built on
+# Get-ProgramFiles64 (see above) so a 32-bit host still names the 64-bit Program
+# Files.
 function Find-UvExe {
     $exe = Get-Command uv.exe -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source
     if (-not $exe) {
-        $pf = if ($env:ProgramW6432) { $env:ProgramW6432 } else { $env:ProgramFiles }
         $exe = Get-ChildItem `
             "$env:LOCALAPPDATA\Microsoft\WinGet\Links\uv.exe", `
             "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\astral-sh.uv*\uv.exe", `
-            "$pf\WinGet\Links\uv.exe", `
+            "$(Get-ProgramFiles64)\WinGet\Links\uv.exe", `
             "$env:USERPROFILE\.local\bin\uv.exe" `
             -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
     }
@@ -72,29 +143,38 @@ function Find-UvExe {
 
 # Get-WorkspaceName <ws_file> - return the workspace display name from the XML file,
 # stored under the UserName key.
+#
+# -Encoding UTF8 is required, not decorative: Premiere writes these files UTF-8
+# without a BOM, and Windows PowerShell 5.1 - the shell the documented entrypoint
+# actually uses - falls back to the ANSI code page for a file with no BOM. A
+# workspace named "Edicion Camara" then comes back mojibaked and gets copied into the
+# prefs as LastWorkspaceName, naming a workspace that does not exist. (The cmdlet's
+# -Encoding is also CLM-safe, unlike the byte-level .NET read in Set-PrefNode.)
 function Get-WorkspaceName {
     param($wsFile)
-    $content = Get-Content -LiteralPath $wsFile -Raw
+    $content = Get-Content -LiteralPath $wsFile -Raw -Encoding UTF8
     if ($content -match '<key>UserName</key>\s*<ustring>(.*?)</ustring>') { return $Matches[1] }
     return ""
 }
 
 # ConvertTo-CrlfFile <path> - rewrite a file with CRLF endings, no BOM.
 #
-# WORKSPACES ONLY. Premiere does not use one line-ending convention per platform:
-# two serialisers inside the same app disagree, writing into the same profile dir.
+# WORKSPACES ONLY. Premiere does not use one line-ending convention per
+# platform: two serialisers inside the same app disagree, writing into the same
+# profile dir.
 #
 #   Adobe Premiere Pro Prefs   LF on BOTH platforms (pure LF, no CR anywhere)
 #   UserWorkspace*.xml         platform-native: LF on macOS, CRLF on Windows
 #
-# So "Windows means CRLF" is false for this profile as a whole, and converting the
-# prefs would move them AWAY from what Premiere writes. Only the workspaces get
-# converted; Set-PrefNode is EOL-preserving and leaves the prefs alone.
+# So "Windows means CRLF" is false for this profile as a whole, and converting
+# the prefs would move them AWAY from what Premiere writes. Only the workspaces
+# get converted; Set-PrefNode is EOL-preserving and leaves the prefs alone.
 #
-# We ship ONE workspace payload (LF, byte-pinned by .gitattributes) so the repo has
-# a single source of truth. Dropped as-is on Windows it is the only LF file in a
-# Layouts folder Premiere wrote entirely in CRLF, and its first save rewrites every
-# line. Convert on delivery instead, so the platform's own convention lands on disk.
+# We ship ONE workspace payload (LF, byte-pinned by .gitattributes) so the repo
+# has a single source of truth. Dropped as-is on Windows it is the only LF file
+# in a Layouts folder Premiere wrote entirely in CRLF, and its first save
+# rewrites every line. Convert on delivery instead, so the platform's own
+# convention lands on disk.
 #
 function ConvertTo-CrlfFile {
     param($path)
@@ -103,15 +183,16 @@ function ConvertTo-CrlfFile {
     [System.IO.File]::WriteAllText($path, ($text -replace "`r?`n", "`r`n"), $enc)
 }
 
-# Set-PrefNode <prefs> <node> <value> - replace an XML leaf node's text in place.
-# Returns $false WITHOUT touching the file when the node is absent, so callers
-# can flag nodes a future Premiere version may have renamed (no edit = no corruption).
+# Set-PrefNode <prefs> <node> <value> - replace an XML leaf node's text in
+# place. Returns $false WITHOUT touching the file when the node is absent, so
+# callers can flag nodes a future Premiere version may have renamed (no edit =
+# no corruption).
 #
-# EOL-preserving by construction, and deliberately so: it splices between the tags
-# (ReadAllBytes -> string -> Substring join -> WriteAllBytes) and never goes near a
-# newline, so whatever endings the file arrived with survive the edit. Do NOT
-# reimplement this with Get-Content/Set-Content or Out-File, which would normalise
-# the whole file as a side effect of changing one value.
+# EOL-preserving by construction, and deliberately so: it splices between the
+# tags (ReadAllBytes -> string -> Substring join -> WriteAllBytes) and never
+# goes near a newline, so whatever endings the file arrived with survive the
+# edit. Do NOT reimplement this with Get-Content/Set-Content or Out-File, which
+# would normalise the whole file as a side effect of changing one value.
 #
 # Note this file wants LF, unlike the workspaces next to it - see the serialiser
 # split documented on ConvertTo-CrlfFile. That is why nothing here converts.
@@ -130,9 +211,10 @@ function Set-PrefNode {
     return $true
 }
 
-# Set-PremierePro <prefs> <kys_file> <ws_name> - point Premiere Pro's keyboard shortcuts preset
-# and active workspace at our files, use  Classic label colour preset, enable auto-save every 5 minutes,
-# and toggle on the Timeline's Linked Selection button and some Timeline Display Settings.
+# Set-PremierePro <prefs> <kys_file> <ws_name> - point Premiere Pro's keyboard
+# shortcuts preset and active workspace at our files, use  Classic label colour
+# preset, enable auto-save every 5 minutes, and toggle on the Timeline's Linked
+# Selection button and some Timeline Display Settings.
 #
 # A missing-node warning can mean one of two things:
 #   (a) Fresh Premiere install - Premiere only writes certain nodes to disk after
@@ -193,8 +275,8 @@ function Set-PremierePro {
 
 # Set-FileAssociation <ext> <progid> - write a UserChoice entry so Explorer
 # treats <progid> as the default handler for <ext>. Windows protects this key
-# with a tamper hash tied to the user SID + current time; we compute it with
-# MD5 and unlock the key's ACL so the write succeeds.
+# with a tamper hash tied to the user SID + current time; we compute it with MD5
+# and unlock the key's ACL so the write succeeds.
 function Set-FileAssociation {
     param($Extension, $ProgId)
     $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
@@ -229,10 +311,199 @@ function Set-FileAssociation {
     $parent.Close()
 }
 
-# winget package lists. Kept above the guard so the test suite can source them and
-# confirm every id still resolves on winget (catches renames/delisting/typos).
-# uv is singled out: it installs per-user (its tools live in the user's home), so it's
-# kept out of the elevated machine-wide batch and installed in the non-elevated process.
+# -----------------------------------------------------------------------------
+# Explorer's default folder view
+# -----------------------------------------------------------------------------
+# Windows has no single "sort by / group by" preference. A folder's view is
+# stored PER FOLDER, in shellbags, and the view a folder starts with comes from
+# a folder-type template Explorer guesses from the contents.
+#
+# The goal here is deliberately not one view everywhere: every folder should
+# sort by Name ascending and never group, EXCEPT Downloads, which should sort by
+# Date modified with the newest file first - and still not group. So the
+# per-type guessing has to keep working; only its templates get replaced:
+#
+#   Bags\AllFolders\Shell\{type-id}    one template per folder type - what
+#                                      Folder Options' "Apply to Folders" writes
+#                                      for the type of the folder you press it
+#                                      in. Name/ascending for every type we
+#                                      might be guessed into, Date
+#                                      modified/descending for Downloads
+#                                      Bags\<n> and BagMRU the remembered
+#                                      per-folder views, which OVERRIDE the
+#                                      templates - cleared
+#
+# Every path is HKCU, so this stays a fast-pass step and asks for no elevation.
+
+# AllFolders\Shell is the template tree. Its SUBKEYS are named by folder type,
+# not by view: a bag's view for a given type lives at <bag>\Shell\{type-guid},
+# and the matching AllFolders\Shell\{type-guid} is the default every folder of
+# that type inherits. That is the whole lever this section pulls - it is what
+# lets Downloads get a different sort from everything else without touching a
+# single per-folder bag.
+$ExplorerAllFoldersKey = "HKCU:\Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\Bags\AllFolders\Shell"
+$ExplorerFolderTypeKey = "HKCU:\Software\Microsoft\Windows\Shell\Bags\AllFolders\Shell"
+
+# The per-folder view memory, in both trees Explorer keeps it in. Recursively
+# deleted, so these must stay HKCU-only.
+$ExplorerBagPaths = @(
+    "HKCU:\Software\Microsoft\Windows\Shell\BagMRU"
+    "HKCU:\Software\Microsoft\Windows\Shell\Bags"
+    "HKCU:\Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\BagMRU"
+    "HKCU:\Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\Bags"
+)
+
+# Folder type ids, from HKLM\...\Explorer\FolderTypes\{guid}\CanonicalName.
+# Explorer guesses a type per folder from its contents; Downloads is the one
+# that matters, because its built-in template is what supplies the Date modified
+# sort and the "Today / Yesterday / Last week" headers.
+$FOLDERTYPE_GENERIC = "{5C4F28B5-F869-4E84-8E60-F11DB97C5CC7}"
+$FOLDERTYPE_DOCUMENTS = "{7D49D726-3C21-4F05-99AA-FDC2C9474656}"
+$FOLDERTYPE_PICTURES = "{B3690E58-E961-423B-B687-386EBFD83239}"
+$FOLDERTYPE_MUSIC = "{94D6DDCC-4A68-4175-A374-BD584A510B78}"
+$FOLDERTYPE_VIDEOS = "{5FA96407-7E77-483C-AC93-691D05850DE8}"
+$FOLDERTYPE_DOWNLOADS = "{885A186E-A440-4ADA-812B-DB871B942259}"
+
+
+# "Sort" is a serialised SORTCOLUMN array:
+#   [0x00] 16 bytes  reserved, always zero
+#   [0x10] DWORD     column count
+#   [0x14] 16 bytes  PROPERTYKEY fmtid, little-endian. {B725F130-47EF-101A-A5F1-
+#                    02608C9EEBAC} is the shell's own property set
+#   [0x24] DWORD     property id - 10 is System.ItemNameDisplay, i.e. "Name"
+#                    (4 = Type, 12 = Size, 14 = Date modified)
+#   [0x28] DWORD     direction - 1 ascending, 0xffffffff descending
+$SORT_BY_NAME_ASC = [byte[]] @(
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x01, 0x00, 0x00, 0x00,
+    0x30, 0xf1, 0x25, 0xb7, 0xef, 0x47, 0x1a, 0x10, 0xa5, 0xf1, 0x02, 0x60, 0x8c, 0x9e, 0xeb, 0xac,
+    0x0a, 0x00, 0x00, 0x00,
+    0x01, 0x00, 0x00, 0x00
+)
+
+# Same layout, PID 14 (System.DateModified) descending, i.e. most recent first.
+# Spelled out as a second literal rather than cloned-and-patched from the one
+# above so it stays readable under Constrained Language Mode, where the method
+# calls a builder would need are not available. The tests decode both blobs
+# field by field, so a typo in either fails as "sorts by the wrong column"
+# rather than as a view nobody notices is wrong.
+$SORT_BY_DATE_MODIFIED_DESC = [byte[]] @(
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x01, 0x00, 0x00, 0x00,
+    0x30, 0xf1, 0x25, 0xb7, 0xef, 0x47, 0x1a, 0x10, 0xa5, 0xf1, 0x02, 0x60, 0x8c, 0x9e, 0xeb, 0xac,
+    0x0e, 0x00, 0x00, 0x00,
+    0xff, 0xff, 0xff, 0xff
+)
+
+# The template to write per folder type. Everything Explorer might guess a
+# folder into gets Name/ascending, so the sort does not change under you as a
+# folder's contents change type; Downloads alone gets Date modified/descending.
+# Ordered so the checklist and any failure message name Generic first.
+#
+# Covering the guessable types individually is what replaces the old
+# FolderType=NotSpecified blanket. It reaches the same "one view everywhere"
+# result while leaving the type intact for the one folder whose type we want to
+# keep.
+$ExplorerViewTemplates = [ordered] @{
+    $FOLDERTYPE_GENERIC   = $SORT_BY_NAME_ASC
+    $FOLDERTYPE_DOCUMENTS = $SORT_BY_NAME_ASC
+    $FOLDERTYPE_PICTURES  = $SORT_BY_NAME_ASC
+    $FOLDERTYPE_MUSIC     = $SORT_BY_NAME_ASC
+    $FOLDERTYPE_VIDEOS    = $SORT_BY_NAME_ASC
+    $FOLDERTYPE_DOWNLOADS = $SORT_BY_DATE_MODIFIED_DESC
+}
+
+# Test-ExplorerDefaultView - true once every folder-type template is ours:
+# ungrouped everywhere, sorted by Name ascending, except Downloads which sorts
+# by Date modified descending. Drives both the checklist and
+# Set-ExplorerDefaultView's early return, so a second run neither clears the
+# shellbags nor restarts the shell again.
+#
+# The Sort blob is compared as a joined string on purpose. `-eq` between two
+# byte arrays is an element-wise FILTER in PowerShell, not an equality test: it
+# returns the matching elements, so a perfect match against a blob starting with
+# 0x00 would come back falsy and this would report "not applied" forever.
+#
+# Both keys are injectable so the comparison can be unit-tested against a probe
+# key, the way Get-UserFolder takes its $key.
+function Test-ExplorerDefaultView {
+    param($baseKey = $ExplorerAllFoldersKey, $typeKey = $ExplorerFolderTypeKey)
+    foreach ($type in $ExplorerViewTemplates.Keys) {
+        $k = Join-Path $baseKey $type
+        if (($ExplorerViewTemplates[$type] -join ',') -ne ((Get-RegValue $k 'Sort') -join ',')) { return $false }
+        if ((Get-RegValue $k 'GroupView') -ne 0) { return $false }
+    }
+    # A leftover NotSpecified from an earlier version of this script would pin
+    # every folder to Generic and starve the Downloads template, so its absence
+    # is part of the applied state rather than a separate cleanup step.
+    return $null -eq (Get-RegValue $typeKey 'FolderType')
+}
+
+# Set-ExplorerDefaultView - make "Group by: (None)" plus "Sort by: Name,
+# ascending" the view every folder opens with, and "Sort by: Date modified,
+# descending" the view Downloads opens with. Returns $true when it changed
+# something, so the caller knows whether the shell has to be restarted.
+function Set-ExplorerDefaultView {
+    if (Test-ExplorerDefaultView) { return $false }
+
+    # The remembered per-folder views beat the template, so any folder already
+    # visited would keep its old sort and grouping forever. Clearing them is
+    # what "Reset Folders" does.
+    foreach ($bag in $ExplorerBagPaths) {
+        Remove-Item -LiteralPath $bag -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    # Written after the clear, not before: AllFolders is a subkey of Bags and
+    # would have been deleted along with it.
+    foreach ($type in $ExplorerViewTemplates.Keys) {
+        $k = Join-Path $ExplorerAllFoldersKey $type
+        New-Item -Path $k -Force | Out-Null
+        Set-ItemProperty -LiteralPath $k -Name "Sort" -Value $ExplorerViewTemplates[$type] -Type Binary
+
+        # GroupView 0 alongside a null GroupByKey is what Explorer itself writes
+        # for an ungrouped folder. Zeroing GroupView on its own is not enough -
+        # the leftover GroupByKey names a column to group by and the headers
+        # come back the next time the view is touched. Downloads is the folder
+        # this actually rescues: its built-in template groups by Date modified,
+        # which is where the "Today / Yesterday / Last week" headers come from.
+        Set-ItemProperty -LiteralPath $k -Name "GroupView" -Value 0 -Type DWord
+        Set-ItemProperty -LiteralPath $k -Name "GroupByKey:FMTID" -Value "{00000000-0000-0000-0000-000000000000}" -Type String
+        Set-ItemProperty -LiteralPath $k -Name "GroupByKey:PID" -Value 0 -Type DWord
+        Set-ItemProperty -LiteralPath $k -Name "GroupByDirection" -Value 1 -Type DWord
+    }
+
+    # Undo the blanket folder-type override an earlier version of this script
+    # wrote. Left in place it would type every folder as Generic, and Downloads
+    # would inherit Name/ascending along with everything else instead of
+    # reaching its own template.
+    Remove-ItemProperty -LiteralPath $ExplorerFolderTypeKey -Name "FolderType" -Force -ErrorAction SilentlyContinue
+
+    return $true
+}
+
+# Restart-Explorer - bounce the shell so the view above takes effect now.
+#
+# Not cosmetic. explorer.exe holds the bags for the folders it has open in
+# memory and writes them back as windows close, so leaving it running lets it
+# re-create the per-folder views we just cleared - the same trap the macOS side
+# has with Finder buffering .DS_Store. Stopping it is enough on a normal desktop
+# (the shell relaunches itself); the explicit start is the fallback for a
+# session where it does not.
+#
+# Cmdlets only, so this still works under Constrained Language Mode.
+function Restart-Explorer {
+    Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 2
+    if (-not (Get-Process -Name explorer -ErrorAction SilentlyContinue)) {
+        Start-Process explorer.exe
+    }
+}
+
+# winget package lists. Kept above the guard so the test suite can source them
+# and confirm every id still resolves on winget (catches
+# renames/delisting/typos). uv is singled out: it installs per-user (its tools
+# live in the user's home), so it's kept out of the elevated machine-wide batch
+# and installed in the non-elevated process.
 $UV_PKG = "astral-sh.uv"
 $CORE_PKGS = @(
     "astral-sh.uv",
@@ -276,31 +547,33 @@ $PKG_ALIAS = @{
 }
 function Get-PkgAlias($id) { if ($PKG_ALIAS.ContainsKey($id)) { $PKG_ALIAS[$id] } else { $id } }
 
-# Default-app targets - the apps we make the OS default for and the file types each
-# should own. WingetId ties each to its package so the friendly name comes from
-# $PKG_ALIAS (shared with the "install or update" checklist line). ProgId contains
-# "{ext}" for installers that register a per-extension ProgId (VLC -> VLC.mp4,
-# VLC.mkv, ...); otherwise it's a single ProgId used for every type (the 64-bit
-# Acrobat Reader). This one list drives the checklist and Set-DefaultApp.
+# Default-app targets - the apps we make the OS default for and the file types
+# each should own. WingetId ties each to its package so the friendly name comes
+# from $PKG_ALIAS (shared with the "install or update" checklist line). ProgId
+# contains "{ext}" for installers that register a per-extension ProgId (VLC ->
+# VLC.mp4, VLC.mkv, ...); otherwise it's a single ProgId used for every type
+# (the 64-bit Acrobat Reader). This one list drives the checklist and
+# Set-DefaultApp.
 $DEFAULT_APPS = @(
     @{
         WingetId = "VideoLAN.VLC"
-        Exe      = "$env:ProgramFiles\VideoLAN\VLC\vlc.exe"
+        Exe      = "$(Get-ProgramFiles64)\VideoLAN\VLC\vlc.exe"
         ProgId   = "VLC.{ext}"
         Exts     = @('mp4', 'm4v', 'mov', 'mkv', 'avi', 'wmv', 'flv', 'webm', 'mpg', 'mpeg', 'm2ts', 'mts', 'ts', 'vob', 'mxf')
     }
     @{
         WingetId = "Adobe.Acrobat.Reader.64-bit"
-        Exe      = "$env:ProgramFiles\Adobe\Acrobat DC\Acrobat\Acrobat.exe"
+        Exe      = "$(Get-ProgramFiles64)\Adobe\Acrobat DC\Acrobat\Acrobat.exe"
         ProgId   = "Acrobat.Document.DC"
         Exts     = @('pdf')
     }
 )
 
-# Remove-SelfTemp - delete our own copy when we were launched from a temp file. The
-# documented entrypoint downloads the script to %TEMP% before running it; PowerShell
-# loads the whole script into memory first, so deleting the file mid-run is safe. Only
-# ever removes a copy under %TEMP% - a checkout or any other location is left untouched.
+# Remove-SelfTemp - delete our own copy when we were launched from a temp file.
+# The documented entrypoint downloads the script to %TEMP% before running it;
+# PowerShell loads the whole script into memory first, so deleting the file
+# mid-run is safe. Only ever removes a copy under %TEMP% - a checkout or any
+# other location is left untouched.
 function Remove-SelfTemp {
     # $path/$temp default to the live script path and TEMP, but are injectable so the
     # guard can be unit-tested. Guard on $temp being non-empty: StartsWith("") is true
@@ -311,16 +584,18 @@ function Remove-SelfTemp {
     }
 }
 
-# Test-AppInstalled <pattern> - true if any Windows uninstall entry's DisplayName
-# matches <pattern> (per-machine 64- and 32-bit, plus per-user). Plenty of entries
-# carry no DisplayName at all, so "/v DisplayName" drops them before the match runs.
+# Test-AppInstalled <pattern> - true if any Windows uninstall entry's
+# DisplayName matches <pattern> (per-machine 64- and 32-bit, plus per-user).
+# Plenty of entries carry no DisplayName at all, so "/v DisplayName" drops them
+# before the match runs.
 #
-# reg.exe rather than Get-ItemProperty: a 32-bit PowerShell host reads HKLM\SOFTWARE
-# through WOW64 redirection, so both per-machine paths would collapse onto the 32-bit
-# view and a 64-bit-only entry (Flicker Free registers one) would read as missing -
-# reinstalling it on every run. /reg:64 and /reg:32 name the view explicitly whatever
-# the host's bitness, and unlike the .NET RegistryView API they still work under CLM.
-# HKCU isn't redirected for this path, so one view covers it.
+# reg.exe rather than Get-ItemProperty: a 32-bit PowerShell host reads
+# HKLM\SOFTWARE through WOW64 redirection, so both per-machine paths would
+# collapse onto the 32-bit view and a 64-bit-only entry (Flicker Free registers
+# one) would read as missing - reinstalling it on every run. /reg:64 and /reg:32
+# name the view explicitly whatever the host's bitness, and unlike the .NET
+# RegistryView API they still work under CLM. HKCU isn't redirected for this
+# path, so one view covers it.
 #
 # Kept above the library guard, with Remove-SelfTemp, so the tests can reach it.
 function Test-AppInstalled($pattern) {
@@ -355,9 +630,9 @@ $FULL = $args -contains "--full"
 $FAST = $args -contains "--fast"
 $DRY_RUN = $args -contains "--dry-run"
 
-# No flag given - run the Fast pass inline now (quick config), then pause and run the
-# Full pass in this same process. Bail if there's no interactive console (e.g. CI) so
-# we don't run a heavy install on an unattended box.
+# No flag given - run the Fast pass inline now (quick config), then pause and
+# run the Full pass in this same process. Bail if there's no interactive console
+# (e.g. CI) so we don't run a heavy install on an unattended box.
 $AUTO = $false
 if (-not ($FULL -or $FAST -or $DRY_RUN)) {
     if ([System.Console]::IsInputRedirected) {
@@ -372,7 +647,7 @@ if (-not ($FULL -or $FAST -or $DRY_RUN)) {
 # Preflight
 # -----------------------------------------------------------------------------
 
-$PREMIERE_OK = Test-Path "$HOME\Documents\Adobe\Premiere Pro"
+$PREMIERE_OK = Test-Path $PremiereDir
 # Premiere may rewrites its prefs while running - activating a set while it's running can get clobbered.
 $PREMIERE_RUNNING = $PREMIERE_OK -and ($null -ne (Get-Process -Name "Adobe Premiere Pro*" -ErrorAction SilentlyContinue))
 $WINGET_OK = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
@@ -382,37 +657,51 @@ $KYS_FILE = "LGG_25.1_WINDOWS.kys"
 $LAYOUT_FILE_1 = "UserWorkspace_LGG_1.xml"
 $LAYOUT_FILE_2 = "UserWorkspace_LGG_2.xml"
 
-# Keyboard repeat
-$KB_Speed = (Get-ItemProperty -Path "HKCU:\Control Panel\Keyboard" -Name "KeyboardSpeed" -ErrorAction SilentlyContinue).KeyboardSpeed
-$KB_Delay = (Get-ItemProperty -Path "HKCU:\Control Panel\Keyboard" -Name "KeyboardDelay" -ErrorAction SilentlyContinue).KeyboardDelay
+# Keyboard repeat. Via Get-RegValue: a fresh profile can be missing either value, and
+# reading it by dotting would error twice instead of yielding $null.
+$KB_Speed = Get-RegValue "HKCU:\Control Panel\Keyboard" "KeyboardSpeed"
+$KB_Delay = Get-RegValue "HKCU:\Control Panel\Keyboard" "KeyboardDelay"
 $KB_OK = ($KB_Speed -eq "31") -and ($KB_Delay -eq "0")
 
+# Test-WingetInstalled <id> - true when exactly this package id is installed.
+#
+# --exact is load-bearing. Without it `winget list --id` filters on a SUBSTRING,
+# and the match below is an unanchored regex over the output, so both halves of
+# the check agree on the wrong answer: with only MediaInfo GUI installed,
+# "MediaArea.MediaInfo" matches the id "MediaArea.MediaInfo.GUI" and the CLI
+# package - a separate entry in $CORE_PKGS - reads as already installed and is
+# never installed.
 function Test-WingetInstalled($id) {
     if (-not $WINGET_OK) { return $false }
-    $result = winget list --id $id --accept-source-agreements 2>$null
+    $result = winget list --id $id --exact --accept-source-agreements 2>$null
     return $LASTEXITCODE -eq 0 -and ($result -match [regex]::Escape($id))
 }
 
-# Invoke-WingetApply <id> [scope] - install the package, or upgrade it in place when
-# already present. <scope> ("user"/"machine") is passed only on a fresh install; an
-# upgrade keeps the existing install's scope. winget's native output is shown only for
-# installs/upgrades and errors. Used for the non-elevated, per-user installs (uv); the
-# elevated machine-wide batch builds its own winget command lines (see Invoke-ElevatedInstall).
+# Invoke-WingetApply <id> [scope] - install the package, or upgrade it in place
+# when already present. <scope> ("user"/"machine") is passed only on a fresh
+# install; an upgrade keeps the existing install's scope. Used for the
+# non-elevated, per-user installs (uv); the elevated machine-wide batch builds
+# its own winget command lines (see Invoke-ElevatedInstall).
 function Invoke-WingetApply($id, $scope) {
+    # Redirecting a native command's stderr under $ErrorActionPreference='Stop'
+    # wraps each line in a NativeCommandError that aborts the script, so soften
+    # the preference while we capture winget's output.
+    $eap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
     if (Test-WingetInstalled $id) {
-        # Redirecting a native command's stderr under $ErrorActionPreference='Stop'
-        # wraps each line in a NativeCommandError that aborts the script, so soften
-        # the preference while we capture winget's output.
-        $eap = $ErrorActionPreference
-        $ErrorActionPreference = 'Continue'
         $out = winget upgrade --id $id --exact --silent --accept-package-agreements --accept-source-agreements 2>&1 | Out-String
-        $ErrorActionPreference = $eap
-        # Swallow the "nothing to do" chatter; surface real upgrade/error output.
-        if ($out -notmatch 'No available upgrade|No installed package') { Write-Host $out.TrimEnd() }
+        # "already current" is winget's normal answer here, not a failure
+        $ok = $LASTEXITCODE -eq 0 -or $out -match 'No available upgrade|No installed package|No newer package'
     }
     else {
         $scopeArg = if ($scope) { @("--scope", $scope) } else { @() }
-        winget install --id $id --exact --silent @scopeArg --accept-package-agreements --accept-source-agreements
+        $out = winget install --id $id --exact --silent @scopeArg --accept-package-agreements --accept-source-agreements 2>&1 | Out-String
+        $ok = $LASTEXITCODE -eq 0
+    }
+    $ErrorActionPreference = $eap
+    if (-not $ok) {
+        Write-Host "  [warn] winget could not apply $(Get-PkgAlias $id):"
+        Write-Host $out.TrimEnd()
     }
 }
 
@@ -422,77 +711,76 @@ function Test-UvInstalled($pkg) {
     return [bool]((& $uv tool list 2>$null) -match "^$pkg")
 }
 
-# Get-RegValue <path> <name> - the value, or $null when the key or the value is
-# absent. Strict mode makes a missing property an error rather than $null, so ask
-# for the value by name instead of reading the whole key and dotting into it.
-function Get-RegValue($path, $name) {
-    (Get-ItemProperty -LiteralPath $path -Name $name -ErrorAction SilentlyContinue).$name
-}
-
-# Test-PremiereApplied - true once our shortcut set is active in any Premiere profile
-# (the prefs' Shortcuts.Filename points at our .kys). Reads the prefs with the same
-# BOM-aware decoding as Set-PrefNode.
+# Test-PremiereApplied - true once our shortcut set is active in any Premiere
+# profile (the prefs' Shortcuts.Filename points at our .kys). Decodes the prefs
+# as UTF-8 to match how Set-PrefNode writes them - see the note on
+# Get-WorkspaceName for why the 5.1 default (the ANSI code page, for a BOM-less
+# file) is the wrong reader here.
 function Test-PremiereApplied {
     if (-not $PREMIERE_OK) { return $false }
-    foreach ($profileDir in Get-ChildItem "$HOME\Documents\Adobe\Premiere Pro\*\Profile-*" -Directory -ErrorAction SilentlyContinue) {
+    foreach ($profileDir in Get-ChildItem "$PremiereDir\*\Profile-*" -Directory -ErrorAction SilentlyContinue) {
         $prefs = Join-Path $profileDir.FullName "Adobe Premiere Pro Prefs"
         if (-not (Test-Path $prefs)) { continue }
-        $content = Get-Content -LiteralPath $prefs -Raw
+        $content = Get-Content -LiteralPath $prefs -Raw -Encoding UTF8
         if ($content -match "<FE\.Prefs\.Shortcuts\.Filename>$([regex]::Escape($KYS_FILE))</FE\.Prefs\.Shortcuts\.Filename>") { return $true }
     }
     return $false
 }
 
-# Test-LutPresent - true once at least one LUT has been downloaded into the work dir.
+# Test-LutPresent - true once at least one LUT has been downloaded into the work
+# dir.
 function Test-LutPresent { [bool](Get-ChildItem "$WorkDir\LUTs" -File -ErrorAction SilentlyContinue | Select-Object -First 1) }
 
 function Done { param($msg); Write-Host ("  " + "[done]".PadRight(12) + $msg) }
 function Skipped { param($msg); Write-Host ("  " + "[skipped]".PadRight(12) + $msg) }
 function WouldRun { param($msg); Write-Host ("  " + "[would run]".PadRight(12) + $msg) }
 
-# Show-Checklist - print the live state of every action: [done], [skipped] or [would
-# run]. The same call works at the start of a run (a preview - nothing done yet) or
-# at the end (a summary - state reflects what ran), because every line is derived
-# from the real current state plus the run mode. No flags, no "post" switch.
+# Show-Checklist - print the live state of every action: [done], [skipped] or
+# [would run]. The same call works at the start of a run (a preview - nothing
+# done yet) or at the end (a summary - state reflects what ran), because every
+# line is derived from the real current state plus the run mode. No flags, no
+# "post" switch.
 function Show-Checklist {
-    $kbSpeed = (Get-ItemProperty "HKCU:\Control Panel\Keyboard" -Name "KeyboardSpeed" -ErrorAction SilentlyContinue).KeyboardSpeed
-    $kbDelay = (Get-ItemProperty "HKCU:\Control Panel\Keyboard" -Name "KeyboardDelay" -ErrorAction SilentlyContinue).KeyboardDelay
+    $kbSpeed = Get-RegValue "HKCU:\Control Panel\Keyboard" "KeyboardSpeed"
+    $kbDelay = Get-RegValue "HKCU:\Control Panel\Keyboard" "KeyboardDelay"
     $kbOk = ($kbSpeed -eq "31") -and ($kbDelay -eq "0")
-    # Input-language / keyboard-layout switch hotkeys disabled ("3" = Not Assigned).
-    # A fresh profile can be missing any of the three values, hence the named reads.
     $toggle = "HKCU:\Keyboard Layout\Toggle"
     $togglesOk = ((Get-RegValue $toggle 'Hotkey') -eq "3") -and ((Get-RegValue $toggle 'Language Hotkey') -eq "3") -and ((Get-RegValue $toggle 'Layout Hotkey') -eq "3")
-    $sysOk = $kbOk -and $togglesOk
+    $sysOk = $kbOk -and $togglesOk -and (Test-ExplorerDefaultView)
     $premiereRunning = $PREMIERE_OK -and ($null -ne (Get-Process -Name "Adobe Premiere Pro*" -ErrorAction SilentlyContinue))
     $ahkActive = Test-Path $AhkScript
     $ahkInstalled = [bool](Find-AhkExe)
 
     Write-Host ""
 
-    # Constrained Language Mode disables the .NET-backed steps below; flag it once up top
-    # so the per-line "skipped" reasons make sense.
+    # Constrained Language Mode disables the .NET-backed steps below; flag it
+    # once up top so the per-line "skipped" reasons make sense.
     if ($CLM) { Write-Host "  [info] Constrained Language Mode active - default apps and Premiere prefs can't be scripted; keyboard/Explorer settings persist but apply at next sign-in." }
 
-    # Premiere Pro - shortcuts, workspace, preferences and LUTs are the editing setup, so they
-    # all require Premiere installed. (When Premiere is open the files are dropped but not activated.)
+    # Premiere Pro - shortcuts, workspace, preferences and LUTs are the editing
+    # setup, so they all require Premiere installed. (When Premiere is open the
+    # files are dropped but not activated.)
     if (-not $PREMIERE_OK) { Skipped  "Premiere Pro (shortcuts, workspace, preferences, LUTs) - Premiere Pro not installed" }
     elseif ($premiereRunning) { Skipped  "Premiere Pro (shortcuts, workspace, preferences, LUTs) - Premiere Pro is open" }
     elseif ($CLM) { Skipped  "Premiere Pro (shortcuts, workspace, preferences, LUTs) - Not allowed under Constrained Language Mode" }
     elseif ((Test-PremiereApplied) -and (Test-LutPresent)) { Done "Premiere Pro (shortcuts, workspace, preferences, LUTs)" }
     else { WouldRun "Premiere Pro (shortcuts, workspace, preferences, LUTs)" }
 
-    # Activate AHK macros - applied whenever AutoHotkey is present. In --fast we might only
-    # have a pre-installed AutoHotkey to work with (installing it is a Full-pass step).
+    # Activate AHK macros - applied whenever AutoHotkey is present. In --fast we
+    # might only have a pre-installed AutoHotkey to work with (installing it is
+    # a Full-pass step).
     if ($ahkActive) { Done     "Activate AHK macros" }
     elseif ($ahkInstalled) { WouldRun "Activate AHK macros" }
     elseif ($FAST) { Skipped  "Activate AHK macros - AutoHotkey not installed" }
     else { WouldRun "Activate AHK macros" }
 
-    # System preferences - keyboard repeat speed/delay and the disabled layout-switch hotkeys
+    # System preferences - keyboard repeat speed/delay, the disabled
+    # layout-switch hotkeys and Explorer's default folder view.
     if ($sysOk) { Done "System preferences" } else { WouldRun "System preferences" }
 
-    # Default apps - one line covering every $DEFAULT_APPS target. "Done" once every
-    # installed app owns its types; nothing to do if none of them are installed.
+    # Default apps - one line covering every $DEFAULT_APPS target. "Done" once
+    # every installed app owns its types; nothing to do if none of them are
+    # installed.
     $names = ($DEFAULT_APPS | ForEach-Object { Get-PkgAlias $_.WingetId }) -join ", "
     $installedApps = @($DEFAULT_APPS | Where-Object { Test-Path $_.Exe })
     $anyInstalled = $installedApps.Count -gt 0
@@ -531,28 +819,32 @@ function Show-Checklist {
 # Phase functions
 # -----------------------------------------------------------------------------
 # Invoke-FastPass - lightweight preference changes only (no downloads/installs).
-# Invoke-SlowPass - everything that downloads or installs. Setting default apps is config
-# that needs the app present, so Set-DefaultApp runs in both phases (idempotent: it
-# re-checks the current default and no-ops once the app already owns its types). The
-# bare command runs Invoke-FastPass inline then hands off to a Full pass that runs
-# Invoke-SlowPass; --fast runs Invoke-FastPass only and --full runs both.
+# Invoke-SlowPass - everything that downloads or installs. Setting default apps
+# is config that needs the app present, so Set-DefaultApp runs in both phases
+# (idempotent: it re-checks the current default and no-ops once the app already
+# owns its types). The bare command runs Invoke-FastPass inline then hands off
+# to a Full pass that runs Invoke-SlowPass; --fast runs Invoke-FastPass only and
+# --full runs both.
 
 # Resolve the ProgId $app should own for $ext (fills in "{ext}" when present).
 function Get-DefaultProgId($app, $ext) { $app.ProgId -replace '\{ext\}', $ext }
 
 # True when $app is already the OS default for its file types (probe the first ext).
+# Via Get-RegValue because on a fresh machine nothing has claimed the type yet, so
+# the UserChoice key does not exist at all.
 function Test-DefaultOwned($app) {
     $ext = $app.Exts[0]
-    $cur = (Get-ItemProperty "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.$ext\UserChoice" -ErrorAction SilentlyContinue).ProgId
+    $cur = Get-RegValue "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.$ext\UserChoice" 'ProgId'
     $cur -eq (Get-DefaultProgId $app $ext)
 }
 
 function Set-DefaultApp {
-    # Point Explorer's per-extension UserChoice at each $DEFAULT_APPS target's ProgIds.
-    # Each app is gated on being installed and re-checks the current default, so it's a
-    # no-op once owned and safe to call from both phases.
-    # The UserChoice tamper-hash needs MD5 + a registry-ACL edit, neither of which is
-    # available under CLM - skip the whole step there (the checklist reports it).
+    # Point Explorer's per-extension UserChoice at each $DEFAULT_APPS target's
+    # ProgIds. Each app is gated on being installed and re-checks the current
+    # default, so it's a no-op once owned and safe to call from both phases. The
+    # UserChoice tamper-hash needs MD5 + a registry-ACL edit, neither of which
+    # is available under CLM - skip the whole step there (the checklist reports
+    # it).
     if ($CLM) { return }
     foreach ($app in $DEFAULT_APPS) {
         if (-not (Test-Path $app.Exe)) { continue }
@@ -565,7 +857,8 @@ function Set-DefaultApp {
 
 function Install-AhkScript {
     # Download the AHK macro script into the work dir and launch it now so the
-    # shortcuts work immediately. The file's presence there is the "done" marker.
+    # shortcuts work immediately. The file's presence there is the "done"
+    # marker.
     if (Test-Path $AhkScript) { return }
     $ahkExe = Find-AhkExe
     if (-not $ahkExe) {
@@ -580,14 +873,15 @@ function Install-AhkScript {
 function Invoke-FastPass {
     # Premiere Pro shortcuts, workspace & LUTs
     if ($PREMIERE_OK) {
-        foreach ($profileDir in Get-ChildItem "$HOME\Documents\Adobe\Premiere Pro\*\Profile-*" -Directory -ErrorAction SilentlyContinue) {
+        foreach ($profileDir in Get-ChildItem "$PremiereDir\*\Profile-*" -Directory -ErrorAction SilentlyContinue) {
             $prefs = Join-Path $profileDir.FullName "Adobe Premiere Pro Prefs"
             $winDir = Join-Path $profileDir.FullName "Win"
             $layouts = Join-Path $profileDir.FullName "Layouts"
 
-            # Premiere creates Win/ and Layouts/ inside each profile, so we write into
-            # them rather than creating them ourselves.
-            # Drop the shortcuts into the Profile's Win folder (where Premiere reads custom sets)
+            # Premiere creates Win/ and Layouts/ inside each profile, so we
+            # write into them rather than creating them ourselves. Drop the
+            # shortcuts into the Profile's Win folder (where Premiere reads
+            # custom sets)
             curl.exe -s --output-dir $winDir  -O "https://raw.githubusercontent.com/lucuma13/load/refs/heads/main/src/data/$KYS_FILE"
             # Drop the workspaces into Layouts. Premiere auto-registers them on launch.
             curl.exe -s --output-dir $layouts -O "https://raw.githubusercontent.com/lucuma13/load/refs/heads/main/src/data/$LAYOUT_FILE_1"
@@ -607,14 +901,16 @@ function Invoke-FastPass {
                 Write-Host "  [warn] Premiere Pro is running - files dropped but not activated"
             }
             elseif ($CLM) {
-                # The prefs write is a byte-level .NET edit (the only no-BOM writer on
-                # PowerShell 5.1); it can't run under CLM. The shortcut/workspace files
-                # are still dropped above - Premiere registers the workspace on launch.
+                # The prefs write is a byte-level .NET edit (the only no-BOM
+                # writer on PowerShell 5.1); it can't run under CLM. The
+                # shortcut/workspace files are still dropped above - Premiere
+                # registers the workspace on launch.
                 Write-Host "  [warn] Constrained Language Mode - shortcut/workspace files dropped but prefs not modified"
             }
             elseif (Test-Path $prefs) {
-                # $profileDir.Parent.Name is the version folder (e.g. "25.0"), so each
-                # profile's warning is tagged with the Premiere version it came from.
+                # $profileDir.Parent.Name is the version folder (e.g. "25.0"),
+                # so each profile's warning is tagged with the Premiere version
+                # it came from.
                 Set-PremierePro -Prefs $prefs -KysFile $KYS_FILE -WsName $wsName -Version $profileDir.Parent.Name
             }
         }
@@ -636,20 +932,26 @@ function Invoke-FastPass {
         }
     }
 
-    # AHK macros - apply now if AutoHotkey is already installed (covers --fast on a
-    # machine that has it). On a Full run AutoHotkey is installed in Invoke-SlowPass, which
-    # applies them there instead - so only act here when it's already present.
+    # AHK macros - apply now if AutoHotkey is already installed (covers --fast
+    # on a machine that has it). On a Full run AutoHotkey is installed in
+    # Invoke-SlowPass, which applies them there instead - so only act here when
+    # it's already present.
     if (Find-AhkExe) { Install-AhkScript }
 
     # Keyboard preferences
     if (-not $KB_OK) {
-        # Persist across reboots
-        Set-ItemProperty -Path "HKCU:\Control Panel\Keyboard" -Name "KeyboardSpeed" -Value 31
-        Set-ItemProperty -Path "HKCU:\Control Panel\Keyboard" -Name "KeyboardDelay" -Value 0
+        # Persist across reboots. Both values are REG_SZ - Windows ignores them as a
+        # DWORD - and -Type String is what pins that: Set-ItemProperty infers the type
+        # from the value only when it has to CREATE the entry, so passing a bare 31
+        # writes a DWORD on exactly the fresh profile this script exists to set up,
+        # while looking correct on any machine where the values already exist.
+        Set-ItemProperty -Path "HKCU:\Control Panel\Keyboard" -Name "KeyboardSpeed" -Value "31" -Type String
+        Set-ItemProperty -Path "HKCU:\Control Panel\Keyboard" -Name "KeyboardDelay" -Value "0" -Type String
 
-        # Apply to the active session immediately (no logoff needed). Needs Add-Type +
-        # P/Invoke, both blocked under CLM - the registry writes above still persist, so
-        # under CLM the change just takes effect at next sign-in instead of instantly.
+        # Apply to the active session immediately (no logoff needed). Needs
+        # Add-Type + P/Invoke, both blocked under CLM - the registry writes
+        # above still persist, so under CLM the change just takes effect at next
+        # sign-in instead of instantly.
         if (-not $CLM) {
             if (-not ([System.Management.Automation.PSTypeName]'KeyboardConfig').Type) {
                 Add-Type -TypeDefinition @"
@@ -666,10 +968,11 @@ public class KeyboardConfig {
     }
 
     # Disable the input-language / keyboard-layout switch hotkeys (Alt+Shift,
-    # Ctrl+Shift) at the OS level - "3" = Not Assigned. Done here instead of in the
-    # AHK macros because intercepting LAlt & LShift there swallowed Shift and broke
-    # Alt+Shift shortcuts (e.g. Win+Alt+Shift+Backspace, Alt+Shift+2).
-    # Values are REG_SZ; create the key if a fresh profile lacks it. Applies at next sign-in.
+    # Ctrl+Shift) at the OS level - "3" = Not Assigned. Done here instead of in
+    # the AHK macros because intercepting LAlt & LShift there swallowed Shift
+    # and broke Alt+Shift shortcuts (e.g. Win+Alt+Shift+Backspace, Alt+Shift+2).
+    # Values are REG_SZ; create the key if a fresh profile lacks it. Applies at
+    # next sign-in.
     $toggle = "HKCU:\Keyboard Layout\Toggle"
     if (-not (Test-Path $toggle)) { New-Item -Path $toggle -Force | Out-Null }
     Set-ItemProperty -Path $toggle -Name "Hotkey"          -Value "3" -Type String
@@ -683,9 +986,10 @@ public class KeyboardConfig {
     # Show the status bar at the bottom of Explorer windows (ShowStatusBar = 1).
     Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "ShowStatusBar" -Value 1
 
-    # Tell Explorer to re-read its settings so the change applies without a restart.
-    # Add-Type/P-Invoke is blocked under CLM; the HideFileExt write above persists, so
-    # under CLM the change just applies on the next Explorer restart instead of now.
+    # Tell Explorer to re-read its settings so the change applies without a
+    # restart. Add-Type/P-Invoke is blocked under CLM; the HideFileExt write
+    # above persists, so under CLM the change just applies on the next Explorer
+    # restart instead of now.
     if (-not $CLM) {
         if (-not ([System.Management.Automation.PSTypeName]'Win32Shell').Type) {
             Add-Type -TypeDefinition @"
@@ -702,50 +1006,67 @@ public class Win32Shell {
 
     # Default apps - config that needs the app present (see Set-DefaultApp)
     Set-DefaultApp
+
+    # Default folder view - no grouping anywhere, sort by Name ascending
+    # everywhere except Downloads, which sorts by Date modified with the newest
+    # file first. Last in the pass deliberately: applying it restarts the
+    # shell, so the relaunched Explorer picks up HideFileExt, the status bar and
+    # the new default apps in the same bounce. Guarded by its own state check,
+    # so a re-run neither clears the shellbags again nor closes the user's
+    # windows a second time.
+    if (Set-ExplorerDefaultView) {
+        Write-Host "  [note] Explorer default view set to Name / ascending with no grouping,"
+        Write-Host "         and Downloads to Date modified / newest first."
+        Write-Host "         Restarting Explorer to apply it - any open Explorer windows will close."
+        Restart-Explorer
+    }
 }
 
 # Update-SessionPath - pull the freshly-installed tools' PATH entries into this
-# session. Normally rebuilds $env:Path from the Machine + User stores via .NET (which
-# expands %vars%). Under CLM that .NET call is blocked, so fall back to reading the
-# registry with cmdlets and *appending* to the live $env:Path (REG_EXPAND_SZ entries
-# come back unexpanded, so we keep the current PATH rather than replacing it).
+# session. Normally rebuilds $env:Path from the Machine + User stores via .NET
+# (which expands %vars%). Under CLM that .NET call is blocked, so fall back to
+# reading the registry with cmdlets and *appending* to the live $env:Path
+# (REG_EXPAND_SZ entries come back unexpanded, so we keep the current PATH
+# rather than replacing it).
 function Update-SessionPath {
     if (-not $CLM) {
         $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
         [System.Environment]::GetEnvironmentVariable("Path", "User")
         return
     }
-    $machine = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" -Name Path -ErrorAction SilentlyContinue).Path
-    $user = (Get-ItemProperty "HKCU:\Environment" -Name Path -ErrorAction SilentlyContinue).Path
+    $machine = Get-RegValue "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" 'Path'
+    $user = Get-RegValue "HKCU:\Environment" 'Path'
     $env:Path = (@($env:Path, $machine, $user) | Where-Object { $_ }) -join ";"
 }
 
-# Invoke-ElevatedInstall - run every install that needs admin rights in ONE elevated
-# process, so a standard user is asked for the admin password just once. The
-# install/upgrade decisions and the plugin downloads happen here (non-elevated); only
-# the installers run elevated. winget runs with --scope machine so packages install
-# system-wide and are available to the standard user; uv is excluded (it must stay
-# per-user - see Invoke-SlowPass). Does nothing, and prompts for nothing, when there's
-# nothing left to install.
+# Invoke-ElevatedInstall - run every install that needs admin rights in ONE
+# elevated process, so a standard user is asked for the admin password just
+# once. The install/upgrade decisions and the plugin downloads happen here
+# (non-elevated); only the installers run elevated. winget runs with --scope
+# machine so packages install system-wide and are available to the standard
+# user; uv is excluded (it must stay per-user - see Invoke-SlowPass). Does
+# nothing, and prompts for nothing, when there's nothing left to install.
 #
 # The batch is handed to an elevated cmd.exe via its command line: AppLocker's
-# script-file rules and AV script heuristics don't apply, and cmd works under CLM too.
+# script-file rules and AV script heuristics don't apply, and cmd works under
+# CLM too.
 function Invoke-ElevatedInstall {
     $cmds = @()
     $wantMisterHorse = $false
     $wantFlickerFree = $false
 
-    # Premiere plugins - download now (no admin needed), install in the elevated batch.
-    # msiexec and the Flicker Free GUI installer return immediately, so wrap them in
-    # "start /wait" (the leading "" is the required window-title placeholder) so the
-    # batch waits for each to finish.
+    # Premiere plugins - download now (no admin needed), install in the elevated
+    # batch. Both run unattended (msiexec /qn, NSIS /S) and both return
+    # immediately, so wrap them in "start /wait" (the leading "" is the required
+    # window-title placeholder) so the batch waits for each to finish.
     #
-    # Queued AHEAD of the winget commands: winget returns as soon as a packaged installer
-    # hands off, but that installer's own Windows Installer transaction can still be open,
-    # and a second msiexec against a busy Installer exits at once with
-    # ERROR_INSTALL_ALREADY_RUNNING (1618). Under /qn that carries no dialog, and "&"
-    # ignores exit codes, so the install would vanish leaving nothing in the batch output
-    # or the event log - which is how Mister Horse got skipped behind an Acrobat install.
+    # Queued AHEAD of the winget commands: winget returns as soon as a packaged
+    # installer hands off, but that installer's own Windows Installer
+    # transaction can still be open, and a second msiexec against a busy
+    # Installer exits at once with ERROR_INSTALL_ALREADY_RUNNING (1618). Under
+    # /qn that carries no dialog, and "&" ignores exit codes, so the install
+    # would vanish leaving nothing in the batch output or the event log - which
+    # is how Mister Horse got skipped behind an Acrobat install.
     if ($PREMIERE_OK) {
         if (-not (Test-MisterHorseInstalled)) {
             $pmPath = "$WorkDir\MisterHorseProductManager.msi"
@@ -754,6 +1075,11 @@ function Invoke-ElevatedInstall {
             $wantMisterHorse = $true
         }
         # Flicker Free 2.0 - the download is a zip wrapping the installer .exe.
+        #
+        # /S installs it unattended. The .exe is a Nullsoft Install System 3.10
+        # installer (its exehead manifest says so), and the NSIS stub itself
+        # handles /S by skipping every page - licence, install location, Finish
+        # - and running the install sections straight through.
         if (-not (Test-FlickerFreeInstalled)) {
             $ffZip = "$WorkDir\flickerfree_229_AE.zip"
             $ffDir = "$WorkDir\flickerfree_229_AE"
@@ -761,15 +1087,16 @@ function Invoke-ElevatedInstall {
             Expand-Archive -Path $ffZip -DestinationPath $ffDir -Force
             $ffExe = Get-ChildItem $ffDir -Filter *.exe | Select-Object -First 1
             if ($ffExe) {
-                $cmds += "start `"`" /wait `"$($ffExe.FullName)`""
+                $cmds += "start `"`" /wait `"$($ffExe.FullName)`" /S"
                 $wantFlickerFree = $true
             }
         }
     }
 
     # winget: everything except uv, installed machine-wide. An upgrade keeps the
-    # existing install's scope, so --scope is only set on a fresh install. winget waits
-    # for its own installer, so no "start /wait" wrapper is needed here.
+    # existing install's scope, so --scope is only set on a fresh install.
+    # winget waits for its own installer, so no "start /wait" wrapper is needed
+    # here.
     if ($WINGET_OK) {
         $ids = @($CORE_PKGS | Where-Object { $_ -ne $UV_PKG })
         if ($FULL) { $ids += $FULL_PKGS }
@@ -786,10 +1113,11 @@ function Invoke-ElevatedInstall {
 
     if ($cmds.Count -eq 0) { return }  # nothing needs admin - no prompt
 
-    # Join with " & " (run each regardless of the previous one's exit code) and hand it
-    # to one elevated cmd.exe. "/s /c" strips just the outermost quotes, leaving the
-    # inner quotes around installer paths intact. -Wait so the config that follows sees
-    # the installs finished; the elevated console shows install progress.
+    # Join with " & " (run each regardless of the previous one's exit code) and
+    # hand it to one elevated cmd.exe. "/s /c" strips just the outermost quotes,
+    # leaving the inner quotes around installer paths intact. -Wait so the
+    # config that follows sees the installs finished; the elevated console shows
+    # install progress.
     $chain = "/s /c `"" + ($cmds -join " & ") + "`""
     try {
         Start-Process cmd.exe -ArgumentList $chain -Verb RunAs -Wait
@@ -798,11 +1126,11 @@ function Invoke-ElevatedInstall {
         Write-Host "  [warn] Elevated install step did not run (admin prompt cancelled?): $_"
     }
 
-    # Each plugin re-checked against its uninstall entry, because nothing above reports a
-    # plugin that never installed: the batch swallows exit codes and a 1618 msiexec is
-    # silent under /qn. The download is deleted only once its plugin is actually there, so
-    # a failed install leaves the installer in $WorkDir to be run by hand or retried
-    # without fetching it again.
+    # Each plugin re-checked against its uninstall entry, because nothing above
+    # reports a plugin that never installed: the batch swallows exit codes and a
+    # 1618 msiexec is silent under /qn. The download is deleted only once its
+    # plugin is actually there, so a failed install leaves the installer in
+    # $WorkDir to be run by hand or retried without fetching it again.
     if ($wantMisterHorse) {
         if (Test-MisterHorseInstalled) { Remove-Item -LiteralPath $pmPath -Force -ErrorAction SilentlyContinue }
         else { Write-Host "  [warn] Mister Horse Product Manager did not install (another Windows Installer transaction may have been open) - re-run with --full, or run $pmPath yourself" }
@@ -817,22 +1145,25 @@ function Invoke-ElevatedInstall {
 }
 
 function Invoke-SlowPass {
-    # All installs that need admin rights (machine-wide winget packages + the Premiere
-    # plugins) run in ONE elevated batch. Everything below stays in this non-elevated
-    # process so it lands in the real user's profile.
+    # All installs that need admin rights (machine-wide winget packages + the
+    # Premiere plugins) run in ONE elevated batch. Everything below stays in
+    # this non-elevated process so it lands in the real user's profile.
     Invoke-ElevatedInstall
 
-    # uv - installed per-user (no elevation, --scope user) so `uv tool install` lands in
-    # THIS user's home, not the admin's. Invoked by full path (see Find-UvExe) so it's
-    # found even when the session PATH didn't pick up winget's change (common under CLM).
+    # uv - installed per-user (no elevation, --scope user) so `uv tool install`
+    # lands in THIS user's home, not the admin's. Invoked by full path (see
+    # Find-UvExe) so it's found even when the session PATH didn't pick up
+    # winget's change (common under CLM).
     if ($WINGET_OK) { Invoke-WingetApply $UV_PKG "user" }
     Update-SessionPath
     $uv = Find-UvExe
     if ($uv) {
-        # --quiet silences uv's resolve/install progress on success but still prints
-        # warnings and errors, so a failed install is surfaced without any capture dance.
+        # --quiet silences uv's resolve/install progress on success but still
+        # prints warnings and errors, so a failed install is surfaced without
+        # any capture dance.
         foreach ($pkg in $CORE_UV) { & $uv tool install $pkg --upgrade --quiet }
-        # Add uv's tool bin dir to PATH permanently and refresh for this session.
+        # Add uv's tool bin dir to PATH permanently and refresh for this
+        # session.
         & $uv tool update-shell --quiet
         Update-SessionPath
     }
@@ -840,10 +1171,11 @@ function Invoke-SlowPass {
         Write-Host "  [warn] uv not found after install - reopen the terminal and re-run with --full to finish the uv tools ($($CORE_UV -join ', '))"
     }
 
-    # Tell already-running apps to re-read the environment so the new PATH is picked
-    # up without a logoff (this session is already refreshed above). Needs Add-Type +
-    # P/Invoke, both blocked under CLM - skip the broadcast there (other apps pick up
-    # the persisted PATH when they next start; this session was already refreshed).
+    # Tell already-running apps to re-read the environment so the new PATH is
+    # picked up without a logoff (this session is already refreshed above).
+    # Needs Add-Type + P/Invoke, both blocked under CLM - skip the broadcast
+    # there (other apps pick up the persisted PATH when they next start; this
+    # session was already refreshed).
     if (-not $CLM) {
         if (-not ([System.Management.Automation.PSTypeName]'Win32Env').Type) {
             Add-Type -TypeDefinition @"
@@ -863,8 +1195,9 @@ public class Win32Env {
     # Default apps - now that VLC/Acrobat are installed (covers a fresh machine)
     Set-DefaultApp
 
-    # AHK macros - AutoHotkey was installed above on a Full run (or already present).
-    # Launched non-elevated from this process so the macros work on non-elevated apps.
+    # AHK macros - AutoHotkey was installed above on a Full run (or already
+    # present). Launched non-elevated from this process so the macros work on
+    # non-elevated apps.
     Install-AhkScript
 }
 
@@ -877,13 +1210,18 @@ public class Win32Env {
 # %TEMP% copy of the script on every exit path - dry-run, fast and full.
 try {
     # --dry-run just prints the checklist (a preview, since nothing has run), then stops.
+    # Nothing above this point writes to disk, so the preview stays a pure read.
     if ($DRY_RUN) { Show-Checklist; exit 0 }
+
+    # From here on we apply changes, so the work dir has to exist.
+    New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
 
     # Fast pass runs for every mode (--fast, --full, and the bare command).
     Invoke-FastPass
 
-    # The bare command pauses between the quick config and the heavy installs. Enter (or
-    # y) continues to the Full pass; n stops here with just the fast setup applied.
+    # The bare command pauses between the quick config and the heavy installs.
+    # Enter (or y) continues to the Full pass; n stops here with just the fast
+    # setup applied.
     if ($AUTO) {
         $ans = Read-Host "  Fast loading is complete. Continue to FULL mode (downloads + installs)? [Y/n]"
         if ($ans -match '^\s*n') {
@@ -905,6 +1243,6 @@ finally {
 }
 
 # Completeness sentinel - MUST be the last line. The launch command verifies the
-# downloaded file ends with this before executing, so a truncated download (e.g. a
-# dropped connection) is rejected instead of run as an empty/partial script.
+# downloaded file ends with this before executing, so a truncated download (e.g.
+# a dropped connection) is rejected instead of run as an empty/partial script.
 # === END load-win.ps1 ===

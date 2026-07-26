@@ -190,6 +190,81 @@ Describe "Test-UnderHome" {
     }
 }
 
+# Mister Horse is a sign-out, not an uninstall: the plugins are the machine's now, the
+# way VLC and FFmpeg are, but the account signed into them is the departing user's. On
+# Windows that session lives in the app's own encrypted files rather than in a keychain,
+# so removing them IS the sign-out - which makes the contents of that path list, and the
+# order the phase does things in, the properties worth pinning.
+Describe "Mister Horse sign-out" {
+    BeforeAll {
+        $script:unloadWin = Get-Content "$PSScriptRoot/../src/unload-win.ps1" -Raw
+    }
+
+    # %LOCALAPPDATA%\MisterHorse holds the Product Manager's session alongside the
+    # panel's cached copy of it, so one removal signs out both.
+    It "covers the per-user state dir" {
+        if (-not $env:LOCALAPPDATA) {
+            Set-ItResult -Skipped -Because "LOCALAPPDATA is not set on this host"
+            return
+        }
+        Get-MisterHorseStatePath | Should -Contain "$env:LOCALAPPDATA\MisterHorse"
+    }
+
+    # An unset LOCALAPPDATA must yield nothing at all. Interpolating it blindly would
+    # produce the relative "\MisterHorse", which Remove-TargetPath then refuses with a
+    # warning about a path the script invented itself.
+    It "yields nothing when LOCALAPPDATA is unset" {
+        $saved = $env:LOCALAPPDATA
+        try {
+            $env:LOCALAPPDATA = ""
+            @(Get-MisterHorseStatePath).Count | Should -Be 0
+        }
+        finally { $env:LOCALAPPDATA = $saved }
+    }
+
+    It "yields only paths the delete guard will accept" {
+        foreach ($path in Get-MisterHorseStatePath) {
+            Test-UnderHome $path | Should -BeTrue -Because "'$path' would be refused by Remove-TargetPath"
+        }
+    }
+
+    # The sign-out must not turn into an uninstall: the plugins live in Program Files
+    # and the shared Adobe plug-in folders, and both are out of scope here (they are
+    # also machine-wide, so the per-user guard would refuse them anyway).
+    It "removes no installed plugin" {
+        foreach ($path in Get-MisterHorseStatePath) {
+            $path | Should -Not -BeLike "*Program Files*"
+            $path | Should -Not -BeLike "*\Adobe\*"
+        }
+        $body = [regex]::Match($unloadWin, '(?s)function Clear-MisterHorse \{.*?\n\}').Value
+        $body | Should -Not -BeNullOrEmpty -Because "Clear-MisterHorse should be findable"
+        $body | Should -Not -BeLike "*Uninstall-WingetPackage*"
+    }
+
+    # The ordering is the mechanism, as with AutoHotkey: a running Product Manager holds
+    # the session in memory and writes its state back as it closes, so files deleted
+    # underneath it come straight back and the account is still signed in.
+    It "quits the Product Manager before removing its state" {
+        $body = [regex]::Match($unloadWin, '(?s)function Clear-MisterHorse \{.*?\n\}').Value
+        $body | Should -BeLike "*Stop-MisterHorseProcess*"
+        $body.IndexOf('Stop-MisterHorseProcess') | Should -BeLessThan $body.IndexOf('Remove-TargetPath')
+    }
+
+    # "ProductManager.exe" is a generic enough name to belong to another vendor
+    # entirely, so the process match is on the image path.
+    It "matches the app by image path, not by process name" {
+        $body = [regex]::Match($unloadWin, '(?s)function Get-MisterHorseProcess \{.*?\n\}').Value
+        $body | Should -Not -BeNullOrEmpty
+        $body | Should -BeLike "*ExecutablePath*"
+    }
+
+    It "runs as its own phase in the dispatch block" {
+        $dispatch = [regex]::Match($unloadWin, '(?s)^try \{.*?\n\}', 'Multiline').Value
+        $dispatch | Should -Not -BeNullOrEmpty -Because "the dispatch block should be findable"
+        $dispatch | Should -BeLike "*Clear-MisterHorse*"
+    }
+}
+
 Describe "Claude Code target paths" {
     # ~\.claude is the whole point of the Claude target on a machine you're leaving:
     # it holds transcripts, per-project history, memory and the credentials file.
