@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: setup-dev upgrade pre-commit test load unload clean help
+.PHONY: setup-dev upgrade pre-commit test clean help
 
 ifeq ($(OS),Windows_NT)
 SHELL := cmd.exe
@@ -33,20 +33,6 @@ ifeq ($(OS),Windows_NT)
 else
 	npm run test
 	pwsh -Command Invoke-Pester
-endif
-
-load: ## Run the published load script on this machine
-ifeq ($(OS),Windows_NT)
-	powershell -NoProfile -Command "& ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing -Uri 'https://raw.githubusercontent.com/lucuma13/load/main/src/load-win.ps1').Content))"
-else
-	bash <(curl -fsSL https://raw.githubusercontent.com/lucuma13/load/main/src/load-mac.sh)
-endif
-
-unload: ## Run the published unload script on this machine
-ifeq ($(OS),Windows_NT)
-	powershell -NoProfile -Command "& ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing -Uri 'https://raw.githubusercontent.com/lucuma13/load/main/src/unload-win.ps1').Content))"
-else
-	bash <(curl -fsSL https://raw.githubusercontent.com/lucuma13/load/main/src/unload-mac.sh)
 endif
 
 clean: ## Remove test artifacts
