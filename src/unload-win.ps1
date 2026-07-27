@@ -3,8 +3,9 @@
 Windows workstation cleanup script
 
 .DESCRIPTION
-It removes custom setup - load-win's work directory, AutoHotkey, claude-code,
-Mister Horse Product Manager sign-in, and the shell history.
+It removes custom setup - load-win's work directory, our Premiere Pro
+workspaces, AutoHotkey, claude-code, Mister Horse Product Manager sign-in, and
+the shell history.
 
 --dry-run is the only flag, to see the exact list before deleting.
 
@@ -61,6 +62,7 @@ function Show-Usage {
     Write-Host ""
     Write-Host "  Removes, from this account only:"
     Write-Host "    - the work directory ~\Downloads\load-win (LUTs, AHK macros, downloads)"
+    Write-Host "    - the Premiere Pro workspaces load drops (other workspaces are left alone)"
     Write-Host "    - AutoHotkey: quit and uninstalled"
     Write-Host "    - Mister Horse Product Manager: signed out"
     Write-Host "    - Claude Code: signed out, uninstalled, and its local state wiped"
@@ -81,6 +83,56 @@ function Find-AhkExe {
             Select-Object -First 1 -ExpandProperty FullName
     }
     return $exe
+}
+
+# Get-RegValue <path> <name> - the value, or $null when the key or the value is
+# absent.
+function Get-RegValue($path, $name) {
+    Get-ItemProperty -LiteralPath $path -Name $name -ErrorAction SilentlyContinue |
+        Select-Object -ExpandProperty $name -ErrorAction SilentlyContinue
+}
+
+# Get-DocumentsFolder - the real Documents folder, which is where Premiere keeps
+# its profiles.
+function Get-DocumentsFolder {
+    param($key = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders")
+    $path = Get-RegValue $key 'Personal'
+    if ($path -and (Test-Path -LiteralPath $path)) { return $path }
+    return "$HOME\Documents"
+}
+
+# The repo's src/data listing, where the workspaces `load-win` drops come from.
+$WS_API = "https://api.github.com/repos/lucuma13/load/contents/src/data?ref=main"
+
+# Get-WorkspaceFileName [uri] - the workspace filenames from the live listing.
+# Empty when the listing can't be read, which the caller reports rather than
+# treating as "nothing to remove".
+#
+# The whole thing is inside the try, the Where-Object included: an error response
+# (rate limit, a moved repo) is valid JSON without a "name" property, and under
+# Set-StrictMode -Version Latest reading that property throws.
+function Get-WorkspaceFileName {
+    param($uri = $WS_API)
+    try {
+        return @(Invoke-RestMethod -Uri $uri -Headers @{ "User-Agent" = "load-setup" } |
+                Where-Object { $_.name -like 'UserWorkspace_*.xml' } |
+                ForEach-Object { $_.name })
+    }
+    catch { return @() }
+}
+
+# Get-PremiereLayoutDir - the Layouts folders of every Premiere Pro profile on
+# this machine.
+function Get-PremiereLayoutDir {
+    param($premiereDir = (Join-Path (Get-DocumentsFolder) "Adobe\Premiere Pro"))
+    $dirs = @()
+    foreach ($version in Get-ChildItem -LiteralPath $premiereDir -Directory -ErrorAction SilentlyContinue) {
+        foreach ($profileDir in Get-ChildItem -LiteralPath $version.FullName -Directory -Filter "Profile-*" -ErrorAction SilentlyContinue) {
+            $layouts = Join-Path $profileDir.FullName "Layouts"
+            if (Test-Path -LiteralPath $layouts) { $dirs += $layouts }
+        }
+    }
+    return $dirs
 }
 
 # Get-ClaudeStatePath - every per-user path Claude Code writes.
@@ -334,6 +386,30 @@ function Clear-WorkDir {
     if (-not (Remove-TargetPath $WorkDir)) { NothingToDo }
 }
 
+# Clear-PremiereWorkspace - remove our workspace files into Premiere profile's
+# Layouts folders.
+function Clear-PremiereWorkspace {
+    Section "Premiere Pro workspaces"
+    $dirs = @(Get-PremiereLayoutDir)
+    # No Premiere profile means nothing to remove - and no reason to go to the
+    # network for the list.
+    if ($dirs.Count -eq 0) { NothingToDo; return }
+
+    $names = @(Get-WorkspaceFileName)
+    if ($names.Count -eq 0) {
+        Write-Host "  [warn] Could not read the workspace list from GitHub - Premiere workspaces left in place"
+        return
+    }
+
+    $did = $false
+    foreach ($dir in $dirs) {
+        foreach ($name in $names) {
+            if (Remove-TargetPath (Join-Path $dir $name)) { $did = $true }
+        }
+    }
+    if (-not $did) { NothingToDo }
+}
+
 # Clear-Ahk - quit AutoHotkey and uninstall it.
 function Clear-Ahk {
     Section "AutoHotkey"
@@ -467,6 +543,7 @@ try {
     # the work directory goes nothing is running out of it.
     Clear-Ahk
     Clear-WorkDir
+    Clear-PremiereWorkspace
     Clear-MisterHorse
     Clear-Claude
     Clear-ShellHistory

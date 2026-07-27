@@ -83,10 +83,13 @@ setup() {
 }
 
 # The bare command must reach every phase - that is the whole interface now.
-@test "the bare command runs all three cleanup phases" {
+# The throwaway HOME holds no Premiere profile, so the workspace phase returns
+# before it would go to the network: this stays an offline test.
+@test "the bare command runs all four cleanup phases" {
   run env HOME="$BATS_TEST_TMPDIR/home" bash "$DIR/../src/unload-mac.sh" --dry-run
   assert_success
   assert_output --partial "Work directory"
+  assert_output --partial "Premiere Pro workspaces"
   assert_output --partial "Claude Code"
   assert_output --partial "Shell history"
 }
@@ -252,6 +255,134 @@ setup() {
   ZDOTDIR="$HOME/.config/zsh"
   run history_paths
   assert_line "$HOME/.config/zsh/.zsh_history"
+}
+
+# -----------------------------------------------------------------------------
+# Premiere Pro workspaces
+# -----------------------------------------------------------------------------
+
+# A GitHub contents listing for src/data, trimmed to the fields the parser reads
+# and shaped like the real thing: compact JSON, one object per entry, each
+# repeating its filename in "path" and "download_url" as well as "name".
+contents_listing() {
+  printf '[{"name":"LGG_25.1.kys","path":"src/data/LGG_25.1.kys","type":"file",'
+  printf '"download_url":"https://raw.githubusercontent.com/lucuma13/load/main/src/data/LGG_25.1.kys"},'
+  printf '{"name":"UserWorkspace_LGG_1.xml","path":"src/data/UserWorkspace_LGG_1.xml","type":"file",'
+  printf '"download_url":"https://raw.githubusercontent.com/lucuma13/load/main/src/data/UserWorkspace_LGG_1.xml"},'
+  printf '{"name":"UserWorkspace_LGG_2.xml","path":"src/data/UserWorkspace_LGG_2.xml","type":"file",'
+  printf '"download_url":"https://raw.githubusercontent.com/lucuma13/load/main/src/data/UserWorkspace_LGG_2.xml"},'
+  printf '{"name":"UserWorkspace_Colour.xml","path":"src/data/UserWorkspace_Colour.xml","type":"file",'
+  printf '"download_url":"https://raw.githubusercontent.com/lucuma13/load/main/src/data/UserWorkspace_Colour.xml"},'
+  printf '{"name":"LUTs","path":"src/data/LUTs","type":"dir","download_url":null}]\n'
+}
+
+# The match is on UserWorkspace_*.xml: a workspace added to src/data under any
+# name is one load drops, so unload has to take it back out without being edited
+# first.
+@test "parse_workspace_names picks the workspaces out of a contents listing" {
+  run bash -c "$(declare -f contents_listing parse_workspace_names); contents_listing | parse_workspace_names"
+  assert_success
+  assert_line "UserWorkspace_LGG_1.xml"
+  assert_line "UserWorkspace_LGG_2.xml"
+  assert_line "UserWorkspace_Colour.xml"
+}
+
+# Each entry names its file three times (name, path, download_url). Matching the
+# filename loosely anywhere in the JSON would yield every workspace three times,
+# and --dry-run would print each removal three times over.
+@test "parse_workspace_names yields each workspace exactly once" {
+  run bash -c "$(declare -f contents_listing parse_workspace_names); contents_listing | parse_workspace_names"
+  assert_equal "${#lines[@]}" 3
+}
+
+# Nothing but a UserWorkspace_*.xml may come out of the parser.
+@test "parse_workspace_names ignores the other files in src/data" {
+  run bash -c "$(declare -f contents_listing parse_workspace_names); contents_listing | parse_workspace_names"
+  refute_output --partial "LGG_25.1.kys"
+  refute_output --partial "LUTs"
+}
+
+@test "parse_workspace_names yields nothing for an unreadable listing" {
+  run bash -c "$(declare -f parse_workspace_names); printf '%s' '{\"message\":\"API rate limit exceeded\"}' | parse_workspace_names"
+  assert_output ""
+}
+
+# Premiere keeps one profile per version, so a machine that has been through an
+# upgrade has several - each with its own copy of the workspaces to remove.
+@test "premiere_layout_dirs finds the Layouts folder of every profile" {
+  local root="$HOME/Documents/Adobe/Premiere Pro"
+  mkdir -p "$root/25.1/Profile-lgg/Layouts" "$root/24.0/Profile-lgg/Layouts"
+  run premiere_layout_dirs
+  assert_success
+  assert_line "$root/25.1/Profile-lgg/Layouts"
+  assert_line "$root/24.0/Profile-lgg/Layouts"
+}
+
+# A profile Premiere has never written a Layouts folder into contributes nothing
+# - and an unexpanded glob must not be echoed as if it were a path.
+@test "premiere_layout_dirs is silent when there is no Premiere profile" {
+  run premiere_layout_dirs
+  assert_success
+  assert_output ""
+}
+
+@test "premiere_layout_dirs yields only paths the delete guard will accept" {
+  mkdir -p "$HOME/Documents/Adobe/Premiere Pro/25.1/Profile-lgg/Layouts"
+  run premiere_layout_dirs
+  for path in "${lines[@]}"; do
+    under_home "$path" || fail "premiere_layout_dirs yielded '$path', outside \$HOME"
+  done
+}
+
+# local_workspace_names — the same UserWorkspace_*.xml match, applied to the
+# checkout's own src/data instead of the published listing.
+local_workspace_names() {
+  local f
+  for f in "$DIR"/../src/data/UserWorkspace_*.xml; do
+    [ -e "$f" ] && basename "$f"
+  done
+  return 0
+}
+
+# resolved_workspace_names — the workspace filenames unload would act on,
+# preferring the published listing and falling back to the checkout when the
+# fetch comes back empty (no network, or GitHub rate-limiting the
+# unauthenticated request).
+resolved_workspace_names() {
+  local names
+  names="$(workspace_names || true)"
+  [ -n "$names" ] || names="$(local_workspace_names)"
+  echo "$names"
+}
+
+# The contract that matters: unload must remove exactly the workspaces load
+# drops. Both sides read the same src/data listing, so this asserts the listing
+# still carries the filenames load-mac.sh delivers - a rename in the repo that
+# reached only one of the two scripts shows up here.
+@test "the src/data listing carries the workspaces load-mac drops" {
+  local names dropped ws
+  names="$(resolved_workspace_names)"
+  [ -n "$names" ] || fail "no listing from GitHub and no UserWorkspace_*.xml in src/data"
+  # Read from the source text rather than by sourcing it: load-mac.sh sets
+  # WS_FILE_* below its own library guard, so LOAD_LIB=1 never reaches them.
+  dropped="$(grep -o '^WS_FILE_[0-9]*="[^"]*"' "$DIR/../src/load-mac.sh" | sed 's/.*="//;s/"$//')"
+  [ -n "$dropped" ] || fail "no WS_FILE_* assignments found in load-mac.sh"
+  while IFS= read -r ws; do
+    grep -qx "$ws" <<<"$names" || fail "load-mac drops '$ws', which is not in src/data"
+  done <<<"$dropped"
+}
+
+# The fallback is only worth having if it holds the same filenames the published
+# listing does, so point the fetch at a dead URL and confirm the checkout answers
+# with the workspaces load-mac drops.
+@test "the workspace list falls back to the checkout when the fetch fails" {
+  local names dropped ws
+  WS_API="https://127.0.0.1:9/no-such-listing"
+  names="$(resolved_workspace_names)"
+  dropped="$(grep -o '^WS_FILE_[0-9]*="[^"]*"' "$DIR/../src/load-mac.sh" | sed 's/.*="//;s/"$//')"
+  while IFS= read -r ws; do
+    grep -qx "$ws" <<<"$names" || fail "the offline fallback did not yield '$ws'"
+  done <<<"$dropped"
 }
 
 # -----------------------------------------------------------------------------

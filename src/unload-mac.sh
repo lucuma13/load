@@ -4,8 +4,8 @@
 # Usage: bash <(curl -fsSL
 # https://raw.githubusercontent.com/lucuma13/load/main/src/unload-mac.sh)
 #
-# It removes custom setup — load-mac's work directory, Claude Code and the shell
-# history.
+# It removes custom setup — load-mac's work directory, our Premiere Pro
+# workspace templates, Claude Code and the shell history.
 #
 # Usage: --dry-run is the only option, and the way to see the exact list of
 # paths first:
@@ -46,6 +46,7 @@ usage() {
   echo "" >&2
   echo "  Removes:" >&2
   echo "    - the work directory ~/Downloads/load-mac" >&2
+  echo "    - the Premiere Pro workspaces" >&2
   echo "    - claude-code" >&2
   echo "    - shell history" >&2
   echo "" >&2
@@ -121,6 +122,32 @@ claude_state_paths() {
   echo "$HOME/Library/Caches/claude-cli-nodejs"
 }
 
+# WS_API — the repo's src/data listing, where the workspaces `load-mac` drops
+# come from.
+WS_API="https://api.github.com/repos/lucuma13/load/contents/src/data?ref=main"
+
+# parse_workspace_names — read a GitHub contents listing on stdin and echo the
+# name of every UserWorkspace_*.xml entry in it.
+parse_workspace_names() {
+  grep -o '"name"[[:space:]]*:[[:space:]]*"UserWorkspace_[^"]*\.xml"' |
+    sed 's/.*"\(UserWorkspace_[^"]*\.xml\)"/\1/'
+}
+
+# workspace_names — echo the workspace filenames from the live listing. Empty
+# when the fetch fails, which the caller reports rather than treating as
+# "nothing to remove".
+workspace_names() { curl -fsSL "${1:-$WS_API}" | parse_workspace_names; }
+
+# premiere_layout_dirs — echo the Layouts folder of every Premiere Pro profile on
+# this machine.
+premiere_layout_dirs() {
+  local profile
+  for profile in "$HOME/Documents/Adobe/Premiere Pro"/*/Profile-*/; do
+    [ -d "${profile}Layouts" ] && echo "${profile}Layouts"
+  done
+  return 0
+}
+
 # history_paths — echo every shell-history path to remove, one per line.
 #
 # $HISTFILE first because a customised history location must not be missed, but it
@@ -192,6 +219,33 @@ CLAUDE_KEYCHAIN_SERVICE="Claude Code-credentials"
 clean_workdir() {
   section "Work directory ($(tilde "$WORKDIR"))"
   rm_path "$WORKDIR" || nothing_to_do
+}
+
+# clean_premiere_workspaces — remove our workspace files from every Premiere
+# profile's Layouts folder.
+clean_premiere_workspaces() {
+  section "Premiere Pro workspaces"
+  local did=false dirs names dir name
+  dirs="$(premiere_layout_dirs)"
+  # No Premiere profile means nothing to remove - and no reason to go to the
+  # network for the list.
+  if [ -z "$dirs" ]; then
+    nothing_to_do
+    return 0
+  fi
+  # `|| true` because set -o pipefail makes both halves fatal otherwise: a failed
+  # curl (offline) and a grep that matches nothing both exit non-zero.
+  names="$(workspace_names || true)"
+  if [ -z "$names" ]; then
+    echo "  ⚠️  Could not read the workspace list from GitHub — Premiere workspaces left in place"
+    return 0
+  fi
+  while IFS= read -r dir; do
+    while IFS= read -r name; do
+      rm_path "$dir/$name" && did=true
+    done <<<"$names"
+  done <<<"$dirs"
+  $did || nothing_to_do
 }
 
 # claude_signout — drop the stored credential so the account is signed out on this
@@ -284,6 +338,7 @@ main() {
   fi
 
   clean_workdir
+  clean_premiere_workspaces
   clean_claude
   clean_history
 

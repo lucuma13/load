@@ -311,6 +311,60 @@ Describe "Shell history target paths" {
     }
 }
 
+# The workspaces filenames are read from the repo's src/data listing, so what is
+# testable offline is the parts either side of the fetch - where the files are
+# looked for, and what happens when the listing can't be read.
+Describe "Premiere workspace targets" {
+    BeforeAll {
+        # A Premiere profile tree as the machine has it: one profile per
+        # version, each with its own Layouts folder, plus a version folder
+        # Premiere never finished writing (no Layouts) to prove it contributes
+        # nothing.
+        $script:premiereDir = Join-Path $TestDrive "Adobe/Premiere Pro"
+        $script:layouts251 = Join-Path $premiereDir "25.1/Profile-lgg/Layouts"
+        $script:layouts240 = Join-Path $premiereDir "24.0/Profile-lgg/Layouts"
+        New-Item -ItemType Directory -Force -Path $layouts251, $layouts240 | Out-Null
+        New-Item -ItemType Directory -Force -Path (Join-Path $premiereDir "26.0/Profile-lgg") | Out-Null
+    }
+
+    It "finds the Layouts folder of every profile" {
+        $dirs = @(Get-PremiereLayoutDir -premiereDir $premiereDir)
+        $dirs | Should -Contain $layouts251
+        $dirs | Should -Contain $layouts240
+        $dirs.Count | Should -Be 2 -Because "the 26.0 profile has no Layouts folder yet"
+    }
+
+    # No profile means no removal AND no fetch - the caller returns before it
+    # goes to the network.
+    It "yields nothing when Premiere was never installed" {
+        @(Get-PremiereLayoutDir -premiereDir (Join-Path $TestDrive "no-such-dir")).Count | Should -Be 0
+    }
+
+    # An unreadable listing (offline, rate-limited, moved repo) must come back
+    # empty so the caller can say so, rather than throw or read as "nothing to
+    # remove".
+    It "returns no filenames when the listing can't be read" {
+        @(Get-WorkspaceFileName -uri "https://127.0.0.1:9/no-such-listing").Count | Should -Be 0
+    }
+}
+
+# Premiere writes its profiles into the REAL Documents folder, which OneDrive's
+# "Back up this PC's folders" relocates without changing $HOME - the same
+# resolution load-win.ps1 does before it writes there. Guessing wrong would
+# leave the workspaces in place while reporting a clean run.
+Describe "Get-DocumentsFolder" {
+    It "falls back to the profile-relative guess when the key is absent" {
+        Get-DocumentsFolder -key 'HKCU:\Software\ZZNoSuchUnloadProbeKey' | Should -Be "$HOME\Documents"
+    }
+
+    It "resolves the real Documents folder on this machine" -Skip:(-not ((-not (Test-Path Variable:IsWindows)) -or $IsWindows)) {
+        $real = (Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders' `
+                -Name Personal -ErrorAction SilentlyContinue).Personal
+        $real | Should -Not -BeNullOrEmpty -Because 'User Shell Folders\Personal is the authority for Documents'
+        Get-DocumentsFolder | Should -Be $real
+    }
+}
+
 # Remove-SelfTemp only ever deletes a copy of the script under $env:TEMP. The blank-TEMP
 # guard matters because StartsWith("") is true for every path - a blank TEMP must NOT be
 # allowed to match and delete an arbitrary script location.
@@ -328,6 +382,58 @@ Describe "Remove-SelfTemp temp-dir guard" {
         Remove-SelfTemp -path $self -temp $(if ($BlankTemp) { "" } else { $temp })
 
         Test-Path $self | Should -Be (-not $ShouldDelete)
+    }
+}
+
+# The contract that matters: unload must remove exactly the workspaces load
+# drops. Both sides read the same src/data listing, so this confirms the listing
+# still carries the filenames load-win.ps1 delivers - a rename in the repo that
+# reached only one of the two scripts shows up here.
+Describe "Premiere workspace listing" {
+    BeforeAll {
+        # The same UserWorkspace_*.xml match, applied to the checkout's own
+        # src/data.
+        function Get-LocalWorkspaceFileName {
+            return @(Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot "../src/data") `
+                    -Filter "UserWorkspace_*.xml" -File -ErrorAction SilentlyContinue |
+                    ForEach-Object { $_.Name })
+        }
+
+        # The filenames unload would act on: the published listing, falling back
+        # to the checkout when the fetch comes back empty (no network, or GitHub
+        # rate-limiting the unauthenticated request).
+        function Get-ResolvedWorkspaceFileName {
+            param($uri = $WS_API)
+            $listed = @(Get-WorkspaceFileName -uri $uri)
+            if ($listed.Count -eq 0) { $listed = @(Get-LocalWorkspaceFileName) }
+            return $listed
+        }
+
+        # Read from the source text rather than by sourcing it: load-win.ps1
+        # sets $LAYOUT_FILE_* below its own library guard, so $env:LOAD_LIB
+        # never reaches them.
+        $loadWin = Get-Content "$PSScriptRoot/../src/load-win.ps1" -Raw
+        $script:dropped = @([regex]::Matches($loadWin, '(?m)^\$LAYOUT_FILE_\d+\s*=\s*"([^"]+)"') |
+                ForEach-Object { $_.Groups[1].Value })
+    }
+
+    It "carries the workspaces load-win drops" {
+        $dropped.Count | Should -BeGreaterThan 0 -Because "load-win.ps1 should still name the workspaces it drops"
+        $listed = @(Get-ResolvedWorkspaceFileName)
+        $listed.Count | Should -BeGreaterThan 0 -Because "no listing from GitHub and no UserWorkspace_*.xml in src/data"
+        foreach ($name in $dropped) {
+            $listed | Should -Contain $name -Because "load-win drops '$name', so unload must find it in src/data"
+        }
+    }
+
+    # The fallback is only worth having if it holds the same filenames the
+    # published listing does, so point the fetch at a dead URL and confirm the
+    # checkout answers with the workspaces load-win drops.
+    It "falls back to the checkout when the fetch fails" {
+        $listed = @(Get-ResolvedWorkspaceFileName -uri "https://127.0.0.1:9/no-such-listing")
+        foreach ($name in $dropped) {
+            $listed | Should -Contain $name -Because "the offline fallback should still yield '$name'"
+        }
     }
 }
 
