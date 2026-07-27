@@ -9,6 +9,7 @@ setup() {
   bats_load_library bats-assert
   LOAD_LIB=1 source "$DIR/../src/load-mac.sh"
   PREFS="$BATS_TEST_TMPDIR/prefs"
+  CFG="$BATS_TEST_TMPDIR/audacity.cfg"
   # Discover every captured version; adding a premiere_pro_* fixture dir is enough.
   PREMIERE_VERSIONS=()
   for d in "$DIR"/fixtures/premiere_pro_*/; do
@@ -271,6 +272,166 @@ timeline_nodes() {
   done
 }
 
+# audacity_set_pref edits a wxFileConfig INI, so it has to do its own
+# section/key handling. These cover the four shapes it meets in the wild: the key
+# already present, the section present but the key still at its default, no
+# section at all, and no file at all (a cask install Audacity has never been
+# launched from).
+@test "audacity_set_pref replaces an existing key in place" {
+  printf 'PrefsVersion=1.1.1r1\n[GUI]\nTheme=classic\nDefaultViewModeChoiceNew=Waveform\n[Tracks]\nAutoScroll=1\n' >"$CFG"
+  run audacity_set_pref "$CFG" GUI DefaultViewModeChoiceNew Spectrogram
+  assert_success
+  run cat "$CFG"
+  assert_output 'PrefsVersion=1.1.1r1
+[GUI]
+Theme=classic
+DefaultViewModeChoiceNew=Spectrogram
+[Tracks]
+AutoScroll=1'
+}
+
+@test "audacity_set_pref adds the key when the section exists without it" {
+  printf '[GUI]\nTheme=classic\n[Tracks]\nAutoScroll=1\n' >"$CFG"
+  run audacity_set_pref "$CFG" GUI DefaultViewModeChoiceNew Spectrogram
+  assert_success
+  run cat "$CFG"
+  assert_output '[GUI]
+DefaultViewModeChoiceNew=Spectrogram
+Theme=classic
+[Tracks]
+AutoScroll=1'
+}
+
+@test "audacity_set_pref appends the section when it is absent" {
+  printf 'PrefsVersion=1.1.1r1\n[Tracks]\nAutoScroll=1\n' >"$CFG"
+  run audacity_set_pref "$CFG" GUI DefaultViewModeChoiceNew Spectrogram
+  assert_success
+  run cat "$CFG"
+  assert_output 'PrefsVersion=1.1.1r1
+[Tracks]
+AutoScroll=1
+[GUI]
+DefaultViewModeChoiceNew=Spectrogram'
+}
+
+# The fresh-install path: Audacity writes no cfg (and no containing directory)
+# until it first quits, so the helper must author both or the setting would only
+# ever land on a second run of the installer.
+@test "audacity_set_pref creates the file and its directory when neither exists" {
+  local fresh="$BATS_TEST_TMPDIR/fresh/audacity/audacity.cfg"
+  run audacity_set_pref "$fresh" GUI DefaultViewModeChoiceNew Spectrogram
+  assert_success
+  run cat "$fresh"
+  assert_output '[GUI]
+DefaultViewModeChoiceNew=Spectrogram'
+}
+
+# Keys are only unique within a section - [Tracks] and [GUI] can both hold a
+# DefaultViewModeChoiceNew - so a file-wide match would write the wrong one. The
+# decoy in [Tracks] must come back untouched.
+@test "audacity_set_pref only edits the named section" {
+  printf '[Tracks]\nDefaultViewModeChoiceNew=Waveform\n[GUI]\nDefaultViewModeChoiceNew=Waveform\n' >"$CFG"
+  run audacity_set_pref "$CFG" GUI DefaultViewModeChoiceNew Spectrogram
+  assert_success
+  run cat "$CFG"
+  assert_output '[Tracks]
+DefaultViewModeChoiceNew=Waveform
+[GUI]
+DefaultViewModeChoiceNew=Spectrogram'
+}
+
+# Both readers slice each AUDACITY_PREFS entry positionally:
+# apply_audacity_prefs takes the section from before the first "/" and splits the
+# rest on the first "=", and audacity_applied greps that rest as a whole cfg line.
+# An entry missing either separator would silently write to the wrong section or
+# key, so pin the shape.
+@test "every AUDACITY_PREFS entry is a Section/Key=Value triple" {
+  [ "${#AUDACITY_PREFS[@]}" -gt 0 ]
+  for entry in "${AUDACITY_PREFS[@]}"; do
+    assert_regex "$entry" '^[A-Za-z]+/[A-Za-z]+=[^=/]+$'
+  done
+}
+
+# The two platform scripts must enforce the same Audacity settings - the shared
+# "Section/Key=Value" shape exists so the lists can be compared verbatim. Guards
+# against one side being edited alone. (The Windows suite asserts the same thing
+# from its end.)
+@test "AUDACITY_PREFS matches the list in load-win.ps1" {
+  run awk '/^\$AUDACITY_PREFS = @\(/{f=1;next} f&&/^\)/{exit} f&&/"/{
+             gsub(/^[ \t]*"|",?[ \t]*$/,""); print }' "$DIR/../src/load-win.ps1"
+  assert_success
+  # Non-empty, so a silently non-matching awk can't make this pass vacuously.
+  [ "${#lines[@]}" -gt 0 ]
+  assert_equal "$(printf '%s\n' "${lines[@]}")" "$(printf '%s\n' "${AUDACITY_PREFS[@]}")"
+}
+
+# audacity_applied backs the checklist line. It must be all-or-nothing: a cfg
+# carrying only some of the settings is NOT applied, or a partly-configured
+# Audacity would report as done and never get the rest.
+@test "audacity_applied is true only when every pref is present" {
+  AUDACITY_CFG="$CFG"
+  # Nothing there at all.
+  run audacity_applied
+  assert_failure
+  # Only the first setting.
+  printf '[GUI]\nDefaultViewModeChoiceNew=Spectrogram\n' >"$CFG"
+  run audacity_applied
+  assert_failure
+  # Both.
+  audacity_set_pref "$CFG" Spectrum MaxFreq 48000
+  run audacity_applied
+  assert_success
+}
+
+# A value that merely CONTAINS ours must not count - grep without -x would call
+# MaxFreq=480000 (or a commented-out line) a match and skip the real write.
+@test "audacity_applied does not match a partial line" {
+  AUDACITY_CFG="$CFG"
+  printf '[GUI]\nDefaultViewModeChoiceNew=Spectrogram\n[Spectrum]\nMaxFreq=480000\n' >"$CFG"
+  run audacity_applied
+  assert_failure
+}
+
+# The real run applies several prefs to one file in sequence, landing in
+# different sections. Guards that a later call neither disturbs an earlier one
+# nor collapses the sections into each other.
+@test "audacity_set_pref applies successive prefs to different sections" {
+  printf 'PrefsVersion=1.1.1r1\n[GUI]\nTheme=classic\n' >"$CFG"
+  audacity_set_pref "$CFG" GUI DefaultViewModeChoiceNew Spectrogram
+  audacity_set_pref "$CFG" Spectrum MaxFreq 48000
+  run cat "$CFG"
+  assert_output 'PrefsVersion=1.1.1r1
+[GUI]
+DefaultViewModeChoiceNew=Spectrogram
+Theme=classic
+[Spectrum]
+MaxFreq=48000'
+}
+
+# Audacity writes audacity.cfg with the platform's native endings, so the Windows
+# one is CRLF where ours is LF. A CRLF file is the shape a normalising rewrite (or
+# a `.*$` key match, which eats the CR) would visibly destroy, so it is what we
+# assert on - the same guarantee set_pref_node carries for the Premiere prefs.
+@test "audacity_set_pref preserves CRLF endings" {
+  printf '[GUI]\r\nTheme=classic\r\nDefaultViewModeChoiceNew=Waveform\r\n' >"$CFG"
+  run audacity_set_pref "$CFG" GUI DefaultViewModeChoiceNew Spectrogram
+  assert_success
+  # Every ending still CRLF, no bare LF introduced, and the value did change.
+  run perl -0777 -ne 'my $crlf=()=/\r\n/g; my $bare=()=/(?<!\r)\n/g; print "crlf=$crlf bare=$bare"' "$CFG"
+  assert_output 'crlf=3 bare=0'
+  run grep -c $'DefaultViewModeChoiceNew=Spectrogram\r$' "$CFG"
+  assert_success
+}
+
+@test "audacity_set_pref is idempotent" {
+  printf 'PrefsVersion=1.1.1r1\n[GUI]\nTheme=classic\n' >"$CFG"
+  audacity_set_pref "$CFG" GUI DefaultViewModeChoiceNew Spectrogram
+  cp "$CFG" "$CFG.first"
+  audacity_set_pref "$CFG" GUI DefaultViewModeChoiceNew Spectrogram
+  run cmp -s "$CFG.first" "$CFG"
+  assert_success
+}
+
 @test "resolve_mode parses flags" {
   run resolve_mode --fast
   assert_output 'fast'
@@ -293,6 +454,57 @@ timeline_nodes() {
   assert_output --partial 'FolderPath = "/Volumes/SCRATCH_X/Cache/"'
   assert_output --partial 'DatabasePath = "/orig/db/"'
   # cleanup handled by teardown
+}
+
+# tidy_workdir clears the work dir only when the run left nothing behind. The
+# no-Premiere run is the case that motivates it: the LUT pack is the only thing
+# meant to outlive a run, and it's Premiere-gated, so the folder would otherwise
+# be created (and left) empty on every machine without Premiere.
+@test "tidy_workdir removes a work dir the run left empty" {
+  local wd="$BATS_TEST_TMPDIR/load-mac"
+  mkdir -p "$wd"
+  tidy_workdir "$wd"
+  [ ! -d "$wd" ]
+}
+
+# A leftover installer is deliberately kept for the next run to reuse (see the
+# ProVideoFormats download), so a non-empty work dir must survive untouched.
+@test "tidy_workdir keeps a work dir holding a download" {
+  local wd="$BATS_TEST_TMPDIR/load-mac"
+  mkdir -p "$wd"
+  touch "$wd/ProVideoFormats.dmg"
+  tidy_workdir "$wd"
+  [ -f "$wd/ProVideoFormats.dmg" ]
+}
+
+@test "tidy_workdir keeps a work dir holding LUTs" {
+  local wd="$BATS_TEST_TMPDIR/load-mac"
+  mkdir -p "$wd/LUTs"
+  touch "$wd/LUTs/some.cube"
+  tidy_workdir "$wd"
+  [ -f "$wd/LUTs/some.cube" ]
+}
+
+# --fast on a machine without Premiere never creates the dir at all; tidying a
+# path that was never there is normal, not an error (main runs under set -e).
+@test "tidy_workdir succeeds when the work dir was never created" {
+  run tidy_workdir "$BATS_TEST_TMPDIR/never-made"
+  assert_success
+}
+
+# Placement contract: the admin sub-run returns early from main(), and its work
+# dir (in the ADMIN's home, holding only installers we delete) is exactly the one
+# that would be stranded - so the tidy must come before that return.
+@test "main tidies the work dir before the MACHINE_ONLY early return" {
+  run awk '/^main\(\) \{/{c=1} c{print} c&&/^\}/{exit}' "$DIR/../src/load-mac.sh"
+  assert_success
+  local body="$output"
+  local tidy_line machine_line
+  tidy_line="$(printf '%s\n' "$body" | grep -n 'tidy_workdir "\$WORKDIR"' | head -1 | cut -d: -f1)"
+  machine_line="$(printf '%s\n' "$body" | grep -n 'if \$MACHINE_ONLY; then' | head -1 | cut -d: -f1)"
+  [ -n "$tidy_line" ] || fail "main() never calls tidy_workdir"
+  [ -n "$machine_line" ] || fail "guard: MACHINE_ONLY return not found in main()"
+  [ "$tidy_line" -lt "$machine_line" ] || fail "tidy_workdir runs after the MACHINE_ONLY return"
 }
 
 # These hit the network to confirm the hard-coded plugin installer URLs are still

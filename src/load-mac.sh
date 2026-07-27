@@ -275,6 +275,74 @@ premiere_set_media_cache() {
   defaults write "$domain" "Media Cache" -dict-add FolderPath "${cache_dir%/}/"
 }
 
+# audacity_set_pref <cfg> <section> <key> <value> — set a key in Audacity's
+# audacity.cfg. Not a plist: it's a wxFileConfig INI, so `defaults` can't touch
+# it and the org.audacityteam.audacity.plist next to it holds only window state.
+#
+# Creates whatever is missing — the file, the [section], the key — because a
+# freshly installed Audacity has no cfg at all (it writes one on first quit),
+# and a cfg it does write omits every key still at its default. Partial files
+# are fine: wxFileConfig merges what's there over the built-in defaults.
+#
+# Section-scoped by design. Keys are only unique within their section, so the
+# key is matched between this section's header and the next one, never
+# file-wide. Values go through /e so regex specials in them stay literal.
+#
+# The key match is [^\r\n]* rather than .* because a migrated CRLF cfg might
+# keep its CR: perl's `.` matches a bare \r, and `.*$` would eat it.
+audacity_set_pref() {
+  local cfg="$1"
+  mkdir -p "$(dirname "$cfg")" || return 1
+  [ -f "$cfg" ] || : >"$cfg"
+  ASP_SECTION="$2" ASP_KEY="$3" ASP_VAL="$4" perl -i -0777 -pe '
+    my $sec  = quotemeta $ENV{ASP_SECTION};
+    my $key  = quotemeta $ENV{ASP_KEY};
+    my $line = $ENV{ASP_KEY} . "=" . $ENV{ASP_VAL};
+    # Follow the file s own endings for any line we add; default to LF, which is
+    # what Audacity writes here on macOS.
+    my $nl = /\r\n/ ? "\r\n" : "\n";
+    # \r?$ and \r?\n throughout: on a CRLF cfg a bare ^\[GUI\]$ never matches
+    # (the \r sits between "]" and the \n), and the section would be appended a
+    # second time instead of edited.
+    if (/^\[$sec\]\r?$/m) {
+      s{(^\[$sec\]\r?\n)((?:(?!^\[).*\n)*)}{
+        my ($hdr, $body) = ($1, $2);
+        $body =~ s{^$key=[^\r\n]*}{$line}me or $body = $line . $nl . $body;
+        $hdr . $body;
+      }me;
+    } else {
+      $_ .= $nl unless $_ eq "" || /\n$/;
+      $_ .= "[$ENV{ASP_SECTION}]" . $nl . $line . $nl;
+    }
+  ' "$cfg"
+}
+
+# Audacity's settings file
+AUDACITY_CFG="$HOME/Library/Application Support/audacity/audacity.cfg"
+
+# The Audacity settings we enforce:
+#   GUI/DefaultViewModeChoiceNew  default track view mode set to spectrogram
+#   Spectrum/MaxFreq              set max frequency of that spectogram
+AUDACITY_PREFS=(
+  "GUI/DefaultViewModeChoiceNew=Spectrogram"
+  "Spectrum/MaxFreq=48000"
+)
+
+# audacity_present — is Audacity on this machine? A function rather than an
+# inline test because preflight and apply_audacity_prefs must agree.
+audacity_present() { [ -d "/Applications/Audacity.app" ]; }
+
+# audacity_applied — true once every AUDACITY_PREFS entry is in the cfg. Each
+# entry's tail past the section is already the exact "key=value" line, so it
+# greps as a whole line with no reformatting.
+audacity_applied() {
+  [ -f "$AUDACITY_CFG" ] || return 1
+  local pref
+  for pref in "${AUDACITY_PREFS[@]}"; do
+    grep -qx "${pref#*/}" "$AUDACITY_CFG" || return 1
+  done
+}
+
 # Managed package lists. Kept above the guard so the test suite can source them
 # and confirm every formula/cask still resolves (catches
 # renames/delisting/typos).
@@ -302,6 +370,13 @@ pkg_alias() {
   lucuma13/dit/prem-down) echo "prem-down" ;;
   *) echo "$1" ;;
   esac
+}
+
+# tidy_workdir <dir> — remove the work dir if the run left nothing in it. A
+# machine without Premiere never writes to it, and the admin sub-run would
+# otherwise strand an empty folder in the admin's Downloads.
+tidy_workdir() {
+  rmdir "$1" 2>/dev/null || true
 }
 
 # Sourced as a library (tests set LOAD_LIB=1): stop here, run nothing below.
@@ -376,6 +451,12 @@ PREMIERE_MACHINE=false
 # full args, which would hit our own perl call.
 PREMIERE_RUNNING=false
 $PREMIERE_OK && pgrep "Adobe Premiere Pro" &>/dev/null 2>&1 && PREMIERE_RUNNING=true
+AUDACITY_OK=false
+audacity_present && AUDACITY_OK=true
+# Audacity rewrites audacity.cfg wholesale when it quits, so anything we write
+# while it's open is discarded on exit.
+AUDACITY_RUNNING=false
+$AUDACITY_OK && pgrep -x Audacity &>/dev/null 2>&1 && AUDACITY_RUNNING=true
 BREW_OK=false
 # Homebrew is a single-user tool: its prefix is owned by whoever installed it.
 # On a shared Mac a standard user can't write to it (packages are already there
@@ -439,6 +520,28 @@ premiere_applied() {
 # luts_present — true once at least one LUT has been downloaded.
 luts_present() { ls "$WORKDIR/LUTs/"* >/dev/null 2>&1; }
 
+# apply_audacity_prefs — write every AUDACITY_PREFS entry into audacity.cfg.
+#
+# Deliberately re-checks for Audacity itself rather than reading the cached
+# AUDACITY_OK: it is called twice, and the second call happens after run_slow's
+# cask install.
+apply_audacity_prefs() {
+  audacity_present || return 0
+  # Audacity rewrites the whole cfg when it quits, discarding anything we wrote
+  # while it was open.
+  if pgrep -x Audacity &>/dev/null 2>&1; then
+    echo "  ⚠️  Audacity is running — spectrogram settings not changed"
+    return 0
+  fi
+  local pref section entry
+  for pref in "${AUDACITY_PREFS[@]}"; do
+    section="${pref%%/*}" # e.g. GUI
+    entry="${pref#*/}"    # e.g. DefaultViewModeChoiceNew=Spectrogram
+    audacity_set_pref "$AUDACITY_CFG" "$section" "${entry%%=*}" "${entry#*=}" ||
+      echo "  ⚠️  Audacity settings file could not be written — ${entry%%=*} not changed"
+  done
+}
+
 # prefs_applied — true once the lightweight System/Finder/TextEdit config is in
 # place (probe a representative key, mirroring the Windows keyboard check).
 prefs_applied() {
@@ -490,6 +593,18 @@ checklist() {
     already_done "$premiere_line"
   else
     would_run "$premiere_line"
+  fi
+
+  # Audacity — spectrogram track view and its frequency range.
+  local audacity_line="Audacity (track view, frequency range)"
+  if ! $AUDACITY_OK; then
+    would_skip "$audacity_line — not installed"
+  elif $AUDACITY_RUNNING; then
+    would_skip "$audacity_line — Audacity is open"
+  elif audacity_applied; then
+    already_done "$audacity_line"
+  else
+    would_run "$audacity_line"
   fi
 
   # System, Finder & TextEdit preferences — the lightweight config.
@@ -625,6 +740,16 @@ run_fast() {
   killall cfprefsd
   killall AppleSpell 2>/dev/null || true
   killall TextEdit 2>/dev/null || true
+
+  # Audacity — spectrogram track view and its frequency range. Catches an
+  # Audacity already on the machine (however it was installed), so it applies in
+  # every mode, --fast included. A fresh machine where our own --full run is
+  # what installs Audacity is handled by the second call in run_slow.
+  #
+  # Safe on a never-launched Audacity that has no cfg yet: it writes one, and
+  # Audacity merges a partial hand-written cfg over its defaults and keeps our
+  # keys when it rewrites the file on quit (verified).
+  apply_audacity_prefs
 
   # Premiere Pro shortcuts, workspace & labels
   if $PREMIERE_OK; then
@@ -932,6 +1057,13 @@ PY
     [ -n "$full_casks_preexisting" ] && soft_run brew upgrade --cask --greedy $full_casks_preexisting
   fi
 
+  # Audacity preferences, second pass. run_fast already covered an Audacity that
+  # was on the machine before this run; this catches the one the --full block
+  # just installed. Kept in the per-user phase because it writes into $HOME —
+  # the admin sub-run must not run it or the settings would land in the admin's
+  # home.
+  if $DO_USER; then apply_audacity_prefs; fi
+
   # Cache sudo credentials right here — not at the top of this function —
   # because `brew` resets any cached sudo timestamp on every single invocation
   # as a deliberate security measure (see brew.sh: "Reset sudo timestamp to
@@ -1076,6 +1208,11 @@ main() {
   fi
 
   if $RUN_SLOW; then run_slow; fi
+
+  # Both passes are done, so anything still in the work dir is a keeper. Runs
+  # before the MACHINE_ONLY return below so the admin sub-run tidies up after
+  # itself too.
+  tidy_workdir "$WORKDIR"
 
   # The admin sub-run is one phase of the caller's run — it prints its own
   # progress; the caller shows the summary. Don't print a second

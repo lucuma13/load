@@ -211,6 +211,56 @@ function Set-PrefNode {
     return $true
 }
 
+# Set-AudacityPref <cfg> <section> <key> <value> - set a key in Audacity's
+# audacity.cfg.
+#
+# Creates whatever is missing - the file, the [section], the key - because a
+# freshly installed Audacity has no cfg at all (it writes one on first quit),
+# and a cfg it does write omits every key still at its default. Partial files
+# are fine: wxFileConfig merges what's there over the built-in defaults.
+#
+# EOL-preserving (this file is CRLF): wxFileConfig writes it through wxTextFile,
+# which uses the platform's native endings. The file's own first ending is
+# detected and reused for any line this function adds, and the match is `\r?\n`
+# throughout so a hand-edited mixed file still parses.
+#
+# Byte-level read/write for the same reason as Set-PrefNode: it guarantees no
+# BOM is introduced. Windows PowerShell 5.1's `-Encoding UTF8` would add one,
+# and a BOM would glue itself to the first key name in the file. That makes it
+# unavailable under CLM, so callers skip it there.
+function Set-AudacityPref {
+    param($cfg, $section, $key, $value)
+    $enc = [System.Text.Encoding]::UTF8
+    $dir = Split-Path -Parent $cfg
+    if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    $content = if (Test-Path $cfg) { $enc.GetString([System.IO.File]::ReadAllBytes($cfg)) } else { "" }
+
+    $nl = if ($content -match "\r\n") { "`r`n" } elseif ($content -match "\n") { "`n" } else { "`r`n" }
+    $line = "$key=$value"
+    $secPat = "(?m)^\[" + [regex]::Escape($section) + "\]\r?\n"
+    $keyPat = "(?m)^" + [regex]::Escape($key) + "=[^\r\n]*"
+
+    if ($content -match $secPat) {
+        $start = $content.IndexOf($Matches[0]) + $Matches[0].Length
+        $rest = $content.Substring($start)
+        $nextHdr = [regex]::Match($rest, "(?m)^\[")
+        $bodyLen = if ($nextHdr.Success) { $nextHdr.Index } else { $rest.Length }
+        $body = $rest.Substring(0, $bodyLen)
+        $body = if ($body -match $keyPat) {
+            [regex]::Replace($body, $keyPat, { $line })
+        }
+        else { $line + $nl + $body }
+        $content = $content.Substring(0, $start) + $body + $rest.Substring($bodyLen)
+    }
+    else {
+        if ($content -ne "" -and $content -notmatch "\n$") { $content += $nl }
+        $content += "[$section]" + $nl + $line + $nl
+    }
+
+    try { [System.IO.File]::WriteAllBytes($cfg, $enc.GetBytes($content)); return $true }
+    catch { return $false }
+}
+
 # Set-PremierePro <prefs> <kys_file> <ws_name> - point Premiere Pro's keyboard
 # shortcuts preset and active workspace at our files, use  Classic label colour
 # preset, enable auto-save every 5 minutes, and toggle on the Timeline's Linked
@@ -654,6 +704,27 @@ $PREMIERE_OK = Test-Path $PremiereDir
 $PREMIERE_RUNNING = $PREMIERE_OK -and ($null -ne (Get-Process -Name "Adobe Premiere Pro*" -ErrorAction SilentlyContinue))
 $WINGET_OK = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
 
+# Audacity, by its Windows uninstall entry rather than an install path, so it is
+# found however it got onto the machine - our own winget Audacity.Audacity, a
+# manual download, or the Muse Hub build.
+$AUDACITY_OK = Test-AppInstalled 'Audacity'
+# Audacity rewrites audacity.cfg wholesale when it quits, so anything written
+# while it is open is discarded on exit. Same reasoning as $PREMIERE_RUNNING.
+$AUDACITY_RUNNING = $AUDACITY_OK -and ($null -ne (Get-Process -Name "audacity" -ErrorAction SilentlyContinue))
+
+# Audacity's settings file.
+$AUDACITY_CFG = Join-Path $env:APPDATA "audacity\audacity.cfg"
+
+# The Audacity settings we enforce:
+#   GUI/DefaultViewModeChoiceNew  new tracks open as a spectrogram, not a waveform
+#   Spectrum/MaxFreq              top of the spectrogram's frequency range;
+#                                 Audacity's 20 kHz default crops the display
+#                                 well below what 96/192 kHz recordings carry
+$AUDACITY_PREFS = @(
+    "GUI/DefaultViewModeChoiceNew=Spectrogram",
+    "Spectrum/MaxFreq=48000"
+)
+
 # Premiere shortcut set + workspace we distribute
 $KYS_FILE = "LGG_25.1_WINDOWS.kys"
 $LAYOUT_FILE_1 = "UserWorkspace_LGG_1.xml"
@@ -733,6 +804,48 @@ function Test-PremiereApplied {
 # dir.
 function Test-LutPresent { [bool](Get-ChildItem "$WorkDir\LUTs" -File -ErrorAction SilentlyContinue | Select-Object -First 1) }
 
+# Test-AudacityApplied - true once every $AUDACITY_PREFS entry is in the cfg.
+# Each entry's tail past the section is already the exact "key=value" line, so
+# it is matched as a whole line with no reformatting.
+function Test-AudacityApplied {
+    if (-not (Test-Path $AUDACITY_CFG)) { return $false }
+    $content = Get-Content -LiteralPath $AUDACITY_CFG -Raw -Encoding UTF8
+    foreach ($pref in $AUDACITY_PREFS) {
+        $line = $pref.Substring($pref.IndexOf('/') + 1)
+        if ($content -notmatch ("(?m)^" + [regex]::Escape($line) + "\r?$")) { return $false }
+    }
+    return $true
+}
+
+# Set-AudacityConfig - write every $AUDACITY_PREFS entry into audacity.cfg.
+#
+# Deliberately re-checks for Audacity rather than reading the cached
+# $AUDACITY_OK: it is called twice, and the second call happens after the
+# elevated winget install.
+#
+# Runs in the NON-elevated process both times: the cfg lives under the invoking
+# user's %APPDATA%, so doing this inside the elevated batch would write it into
+# the admin's profile instead.
+function Set-AudacityConfig {
+    if ($CLM) { return }   # Set-AudacityPref needs .NET byte IO; see its header
+    # Re-checked rather than reading $AUDACITY_OK - see the header.
+    if (-not (Test-AppInstalled 'Audacity')) { return }
+    if ($null -ne (Get-Process -Name "audacity" -ErrorAction SilentlyContinue)) {
+        Write-Host "  [warn] Audacity is running - spectrogram settings not changed"
+        return
+    }
+    foreach ($pref in $AUDACITY_PREFS) {
+        $slash = $pref.IndexOf('/')
+        $section = $pref.Substring(0, $slash)          # e.g. GUI
+        $entry = $pref.Substring($slash + 1)           # e.g. DefaultViewModeChoiceNew=Spectrogram
+        $eq = $entry.IndexOf('=')
+        $key = $entry.Substring(0, $eq)
+        if (-not (Set-AudacityPref -cfg $AUDACITY_CFG -section $section -key $key -value $entry.Substring($eq + 1))) {
+            Write-Host "  [warn] Audacity settings file could not be written - $key not changed"
+        }
+    }
+}
+
 function Done { param($msg); Write-Host ("  " + "[done]".PadRight(12) + $msg) }
 function Skipped { param($msg); Write-Host ("  " + "[skipped]".PadRight(12) + $msg) }
 function WouldRun { param($msg); Write-Host ("  " + "[would run]".PadRight(12) + $msg) }
@@ -767,6 +880,13 @@ function Show-Checklist {
     elseif ($CLM) { Skipped  "Premiere Pro (shortcuts, workspace, preferences, LUTs) - Not allowed under Constrained Language Mode" }
     elseif ((Test-PremiereApplied) -and (Test-LutPresent)) { Done "Premiere Pro (shortcuts, workspace, preferences, LUTs)" }
     else { WouldRun "Premiere Pro (shortcuts, workspace, preferences, LUTs)" }
+
+    # Audacity - spectrogram track view and its frequency range.
+    if (-not $AUDACITY_OK) { Skipped  "Audacity (track view, frequency range) - Audacity not installed" }
+    elseif ($AUDACITY_RUNNING) { Skipped  "Audacity (track view, frequency range) - Audacity is open" }
+    elseif ($CLM) { Skipped  "Audacity (track view, frequency range) - Not allowed under Constrained Language Mode" }
+    elseif (Test-AudacityApplied) { Done "Audacity (track view, frequency range)" }
+    else { WouldRun "Audacity (track view, frequency range)" }
 
     # Activate AHK macros - applied whenever AutoHotkey is present. In --fast we
     # might only have a pre-installed AutoHotkey to work with (installing it is
@@ -873,6 +993,16 @@ function Install-AhkScript {
 }
 
 function Invoke-FastPass {
+    # Audacity - spectrogram track view and its frequency range. Catches an
+    # Audacity already on the machine (however it was installed), so it applies
+    # in every mode, --fast included. A fresh machine where our own --full run
+    # is what installs Audacity is handled by the second call in Invoke-SlowPass.
+    #
+    # Safe on a never-launched Audacity with no cfg yet: it writes one, and
+    # Audacity merges a partial hand-written cfg over its defaults and keeps our
+    # keys when it rewrites the file on quit.
+    Set-AudacityConfig
+
     # Premiere Pro shortcuts, workspace & LUTs
     if ($PREMIERE_OK) {
         foreach ($profileDir in Get-ChildItem "$PremiereDir\*\Profile-*" -Directory -ErrorAction SilentlyContinue) {
@@ -1193,6 +1323,13 @@ public class Win32Env {
         [IntPtr]$res = [IntPtr]::Zero
         [Win32Env]::SendMessageTimeout($HWND_BROADCAST, 0x001A, [IntPtr]::Zero, "Environment", 2, 5000, [ref]$res) | Out-Null  # WM_SETTINGCHANGE
     }
+
+    # Audacity preferences, second pass. Invoke-FastPass already covered an
+    # Audacity that was on the machine before this run; this catches the one the
+    # --full winget batch just installed, which didn't exist when preflight (or
+    # the fast pass) looked. Runs here in the non-elevated process so the cfg
+    # lands in the real user's %APPDATA%, not the admin's. Idempotent.
+    Set-AudacityConfig
 
     # Default apps - now that VLC/Acrobat are installed (covers a fresh machine)
     Set-DefaultApp
