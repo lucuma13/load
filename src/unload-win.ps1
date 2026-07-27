@@ -62,6 +62,7 @@ function Show-Usage {
     Write-Host ""
     Write-Host "  Removes, from this account only:"
     Write-Host "    - the work directory ~\Downloads\load-win (LUTs, AHK macros, downloads)"
+    Write-Host "    - a leftover copy of load-win.ps1 in %TEMP%"
     Write-Host "    - the Premiere Pro workspaces load drops (other workspaces are left alone)"
     Write-Host "    - AutoHotkey: quit and uninstalled"
     Write-Host "    - Mister Horse Product Manager: signed out"
@@ -264,6 +265,11 @@ $DRY_RUN = $args -contains "--dry-run"
 # Mirrors $WorkDir in load-win.ps1.
 $WorkDir = "$HOME\Downloads\load-win"
 
+# The documented entrypoint downloads load-win.ps1 to %TEMP% and runs it from
+# there; load-win deletes that copy in a finally block, but it survives if the
+# run never reached it.
+$LoadTempCopy = if ($env:TEMP) { Join-Path $env:TEMP "load-win.ps1" } else { "" }
+
 $WINGET_OK = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
 
 # The winget package id load's Windows side would have used for the CLI.
@@ -381,9 +387,14 @@ function Stop-AhkProcess {
     return $true
 }
 
+# Clear-WorkDir - remove the scratch load leaves on disk: the work directory,
+# and a copy of load-win.ps1 stranded in %TEMP% (see $LoadTempCopy). Both are
+# load's own leavings, so they go together.
 function Clear-WorkDir {
-    Section "Work directory ($(Get-DisplayPath $WorkDir))"
-    if (-not (Remove-TargetPath $WorkDir)) { NothingToDo }
+    Section "Work files ($(Get-DisplayPath $WorkDir), plus any load-win.ps1 in %TEMP%)"
+    $cleared = Remove-TargetPath $WorkDir
+    if ($LoadTempCopy) { $cleared = (Remove-TargetPath $LoadTempCopy) -or $cleared }
+    if (-not $cleared) { NothingToDo }
 }
 
 # Clear-PremiereWorkspace - remove our workspace files into Premiere profile's

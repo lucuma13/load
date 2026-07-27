@@ -163,6 +163,44 @@ Describe "AutoHotkey target" {
     }
 }
 
+# load-win runs from a %TEMP% copy and deletes it in a finally block, but a copy
+# survives if the run never got there. Cleaning it is unload's job, and these
+# pin the two ways that goes wrong: targeting the wrong file, and letting a
+# stranded copy report "nothing to do". $LoadTempCopy is defined below the
+# library guard, so assert against the source text.
+Describe "Leftover load-win.ps1 in TEMP" {
+    BeforeAll {
+        $script:unloadWin = Get-Content "$PSScriptRoot/../src/unload-win.ps1" -Raw
+        $script:workDirBody = [regex]::Match($script:unloadWin, '(?s)function Clear-WorkDir \{.*?\n\}').Value
+    }
+
+    # The name matters: unload-win.ps1 may itself be running from a %TEMP% copy,
+    # and that one belongs to Remove-SelfTemp in the finally block, not to this
+    # phase.
+    It "targets load-win.ps1, not the running script's own temp copy" {
+        $script:unloadWin | Should -Match '\$LoadTempCopy\s*=.*Join-Path \$env:TEMP "load-win\.ps1"'
+        $script:workDirBody | Should -BeLike '*$LoadTempCopy*'
+        $script:workDirBody | Should -Not -BeLike '*unload-win.ps1*'
+    }
+
+    # A blank TEMP would make Join-Path produce a bare "load-win.ps1" - a
+    # relative path that Test-UnderHome rejects, but the phase should not go
+    # near it in the first place.
+    It "skips the temp copy when TEMP is unset" {
+        $script:unloadWin | Should -Match '\$LoadTempCopy = if \(\$env:TEMP\)'
+        $script:workDirBody | Should -Match 'if \(\$LoadTempCopy\)'
+    }
+
+    # Removing only the stranded temp copy is still work done: the section has
+    # to say so rather than printing "Nothing to remove" over a delete that just
+    # happened.
+    It "reports work done when only one of the two was there" {
+        $script:workDirBody | Should -Match '-or \$cleared'
+        # An early return after the work directory would strand the temp copy.
+        $script:workDirBody | Should -Not -Match '(?m)^\s*(return|exit)\b'
+    }
+}
+
 # Test-UnderHome is the single guard between a variable that came back empty (or
 # unexpanded, or relative) and a recursive delete with a catastrophic argument.
 Describe "Test-UnderHome" {
