@@ -47,18 +47,33 @@ brew_admin_owner() {
 # password prompts belong to the ADMIN account: the first is `su`, the second is
 # the `sudo` that a pkg-based cask (e.g. adobe-acrobat-reader) runs internally —
 # brew resets the sudo timestamp on every call, so that one can't be
-# pre-authenticated away. Exit codes: 2 = couldn't even switch to an admin (no
-# tty, declined, none found), so the caller reports a clean skip; any other
-# non-zero = the admin sub-run itself returned an error. 0 = success.
+# pre-authenticated away. Exit codes: 2 = no admin to switch to (no tty, none
+# found), 3 = the operator declined at the prompt — both are clean skips for the
+# caller; any other non-zero = the admin sub-run itself returned an error.
+# 0 = success.
 run_machine_via_admin() {
-  local admin ans
+  local admin ans hint declined=false
   [ -e /dev/tty ] || return 2
   admin="$(brew_admin_owner)"
+  # Enter accepts the detected admin. With no default, blank does skip.
+  if [ -n "$admin" ]; then
+    hint="[$admin] (enter to accept, Ctrl-C to skip)"
+  else
+    hint="(blank or Ctrl-C to skip)"
+  fi
+  # Trap SIGINT so Ctrl-C skips only this phase: untrapped it reaches the whole
+  # script and would abandon the per-user config that still has to run.
+  trap 'declined=true' INT
   {
     printf '\n  This account is not an administrator; machine-wide software needs one.\n'
-    printf '  Install it now via an admin account? Enter admin username [%s] (blank to skip): ' "$admin"
+    printf '  Install it now via an admin account? Enter admin username %s: ' "$hint"
     read -r ans || true
   } <>/dev/tty >/dev/tty 2>&1
+  trap - INT
+  if $declined; then
+    echo >/dev/tty
+    return 3
+  fi
   [ -n "$ans" ] && admin="$ans"
   [ -n "$admin" ] || return 2
   echo "  🔑  Switching to '$admin' for the machine-wide install — both password prompts are for THIS admin account:"
@@ -825,6 +840,7 @@ run_slow() {
     case "$machine_rc" in
     0) ;;
     2) would_skip "Machine-wide installs skipped — no admin account available (configuring this user only)" ;;
+    3) would_skip "Machine-wide installs skipped at your request (configuring this user only)" ;;
     *) echo "  ⚠️  The admin account's machine-wide install didn't finish cleanly (see output above) — some packages may be missing; continuing with per-user config" ;;
     esac
   fi
