@@ -5,7 +5,8 @@
 # https://raw.githubusercontent.com/lucuma13/load/main/src/unload-mac.sh)
 #
 # It removes custom setup — load-mac's work directory, our Premiere Pro
-# workspace templates, Claude Code and the shell history.
+# workspace templates, the Mister Horse Product Manager sign-in, Claude Code and
+# the shell history.
 #
 # Usage: --dry-run is the only option, and the way to see the exact list of
 # paths first:
@@ -47,6 +48,7 @@ usage() {
   echo "  Removes:" >&2
   echo "    - the work directory ~/Downloads/load-mac" >&2
   echo "    - the Premiere Pro workspaces" >&2
+  echo "    - the Mister Horse Product Manager sign-in" >&2
   echo "    - claude-code" >&2
   echo "    - shell history" >&2
   echo "" >&2
@@ -120,6 +122,32 @@ claude_state_paths() {
   echo "$HOME/.claude.json"
   echo "$HOME/.claude.json.backup"
   echo "$HOME/Library/Caches/claude-cli-nodejs"
+}
+
+# misterhorse_state_paths — echo every per-user path holding the Mister Horse
+# sign-in.
+#
+# The session lives in the app's own encrypted .dat files under ~/Library/
+# Application Support/MisterHorse (ProductManager/as.dat is the account itself,
+# and the Premiere/After Effects panels keep their own copy beside it) — so
+# removing that tree is the local sign-out.
+#
+# The Product Manager signs in through a web view, so its cookies sit in
+# ~/Library/HTTPStorages and part of the account state is mirrored into
+# ~/Library/Caches.
+misterhorse_state_paths() {
+  local p
+  echo "$HOME/Library/Application Support/MisterHorse"
+  for p in "$HOME/Library/HTTPStorages/com.misterhorse."* "$HOME/Library/Caches/com.misterhorse."*; do
+    [ -e "$p" ] && echo "$p"
+  done
+  return 0
+}
+
+# misterhorse_pids — echo the pid of every running Mister Horse process (the
+# Product Manager and the helpers beside it).
+misterhorse_pids() {
+  ps -xo pid=,comm= | awk 'tolower($0) ~ /mister ?horse/ { print $1 }'
 }
 
 # WS_API — the repo's src/data listing, where the workspaces `load-mac` drops
@@ -248,6 +276,43 @@ clean_premiere_workspaces() {
   $did || nothing_to_do
 }
 
+# quit_misterhorse — quit the Product Manager so the sign-out below sticks, and
+# return 1 when nothing was running.
+quit_misterhorse() {
+  local pids n
+  pids="$(misterhorse_pids)"
+  [ -n "$pids" ] || return 1
+  n="$(echo "$pids" | wc -l | tr -d ' ')"
+  if $DRY_RUN; then
+    removing "Would quit $n running Mister Horse process(es)"
+    return 0
+  fi
+  echo "$pids" | xargs kill -9 2>/dev/null || true
+  removing "Quit $n running Mister Horse process(es)"
+}
+
+# clean_misterhorse — sign this account out of Mister Horse, leaving the plugins
+# installed. See misterhorse_state_paths for why removing that state is the
+# sign-out.
+clean_misterhorse() {
+  section "Mister Horse (Product Manager)"
+  local did=false path
+  quit_misterhorse && did=true
+  while IFS= read -r path; do
+    rm_path "$path" && did=true
+  done <<<"$(misterhorse_state_paths)"
+  $did || nothing_to_do
+
+  # A panel open inside a running Premiere or After Effects has the same session
+  # in memory and writes its own copy back when the host quits, so a sign-out
+  # performed underneath it does not stick. Killing the host would cost the user
+  # unsaved work, so say so instead. Skipped on a dry run, where nothing has been
+  # removed for a panel to undo.
+  if ! $DRY_RUN && pgrep "Adobe Premiere Pro|Adobe After Effects" &>/dev/null; then
+    note "Premiere Pro / After Effects is open — close it and re-run, or its Mister Horse panel will write the session back."
+  fi
+}
+
 # claude_signout — drop the stored credential so the account is signed out on this
 # machine. Runs BEFORE the uninstall (and before the state wipe) so it can't be
 # stranded by either.
@@ -339,6 +404,7 @@ main() {
 
   clean_workdir
   clean_premiere_workspaces
+  clean_misterhorse
   clean_claude
   clean_history
 

@@ -85,11 +85,12 @@ setup() {
 # The bare command must reach every phase - that is the whole interface now.
 # The throwaway HOME holds no Premiere profile, so the workspace phase returns
 # before it would go to the network: this stays an offline test.
-@test "the bare command runs all four cleanup phases" {
+@test "the bare command runs all five cleanup phases" {
   run env HOME="$BATS_TEST_TMPDIR/home" bash "$DIR/../src/unload-mac.sh" --dry-run
   assert_success
   assert_output --partial "Work directory"
   assert_output --partial "Premiere Pro workspaces"
+  assert_output --partial "Mister Horse"
   assert_output --partial "Claude Code"
   assert_output --partial "Shell history"
 }
@@ -220,6 +221,90 @@ setup() {
   for path in "${lines[@]}"; do
     under_home "$path" || fail "claude_state_paths yielded '$path', outside \$HOME"
   done
+}
+
+# -----------------------------------------------------------------------------
+# Mister Horse sign-out
+#
+# This is a sign-out, not an uninstall: the plugins are the machine's now, the way
+# VLC and FFmpeg are, but the account signed into them is the departing user's.
+# The session lives in the app's own encrypted files rather than in the keychain,
+# so removing them IS the sign-out - which makes the contents of that path list,
+# and the order the phase does things in, the properties worth pinning.
+# -----------------------------------------------------------------------------
+
+# ~/Library/Application Support/MisterHorse holds the Product Manager's session
+# (ProductManager/as.dat) alongside each panel's cached copy of it, so one removal
+# signs out the lot.
+@test "misterhorse_state_paths covers the per-user state dir" {
+  run misterhorse_state_paths
+  assert_line "$HOME/Library/Application Support/MisterHorse"
+}
+
+# The Product Manager signs in through a web view, so its cookies and its mirrored
+# account state sit under the vendor's bundle ids. Globbed rather than named one
+# at a time: each panel gets its own id and the set varies by install.
+@test "misterhorse_state_paths covers the web session and the cached account state" {
+  mkdir -p "$HOME/Library/HTTPStorages/com.misterhorse.ProductManager"
+  mkdir -p "$HOME/Library/Caches/com.misterhorse.ProductManager"
+  mkdir -p "$HOME/Library/Caches/com.misterhorse.PremiereComposer2"
+  run misterhorse_state_paths
+  assert_line "$HOME/Library/HTTPStorages/com.misterhorse.ProductManager"
+  assert_line "$HOME/Library/Caches/com.misterhorse.ProductManager"
+  assert_line "$HOME/Library/Caches/com.misterhorse.PremiereComposer2"
+}
+
+# An unmatched glob must not reach the list as its own literal pattern: rm_path
+# would only refuse it, but --dry-run would print "com.misterhorse.*" and read
+# like a bug.
+@test "misterhorse_state_paths yields no unmatched glob" {
+  run misterhorse_state_paths
+  refute_output --partial "*"
+}
+
+@test "misterhorse_state_paths stays inside \$HOME" {
+  mkdir -p "$HOME/Library/Caches/com.misterhorse.ProductManager"
+  run misterhorse_state_paths
+  for path in "${lines[@]}"; do
+    under_home "$path" || fail "misterhorse_state_paths yielded '$path', outside \$HOME"
+  done
+}
+
+# The sign-out must not turn into an uninstall: the Product Manager lives in
+# /Applications and the plugins in the shared Adobe plug-in tree. Both are
+# machine-wide, so under_home would refuse them anyway - but they must not be
+# offered to it in the first place.
+@test "misterhorse_state_paths removes no installed plugin" {
+  run misterhorse_state_paths
+  refute_output --partial "/Applications"
+  refute_output --partial "/Library/Application Support/Adobe"
+}
+
+# The ordering is the mechanism: a running Product Manager holds the session in
+# memory and writes its state back as it closes, so files deleted underneath it
+# come straight back and the account is still signed in.
+@test "clean_misterhorse quits the Product Manager before removing its state" {
+  local body quit rm
+  body="$(awk '/^clean_misterhorse\(\) \{/{c=1} c{print} c&&/^\}/{exit}' "$DIR/../src/unload-mac.sh")"
+  quit="$(echo "$body" | grep -n "quit_misterhorse" | head -1 | cut -d: -f1)"
+  rm="$(echo "$body" | grep -n "rm_path" | head -1 | cut -d: -f1)"
+  [ -n "$quit" ] || fail "clean_misterhorse never quits the Product Manager"
+  [ -n "$rm" ] || fail "clean_misterhorse removes nothing"
+  [ "$quit" -lt "$rm" ] || fail "clean_misterhorse removes state before quitting the app"
+}
+
+# "ProductManager" is a generic enough name to belong to another vendor entirely,
+# so the process match is on the executable path, which is what `comm` prints.
+@test "misterhorse_pids matches the app by executable path, not by process name" {
+  run awk '/^misterhorse_pids\(\) \{/{c=1} c{print} c&&/^\}/{exit}' "$DIR/../src/unload-mac.sh"
+  assert_output --partial "comm="
+}
+
+# Quitting another user's app is not this script's business: -x without -a is this
+# account's processes only.
+@test "misterhorse_pids looks only at this account's processes" {
+  run awk '/^misterhorse_pids\(\) \{/{c=1} c{print} c&&/^\}/{exit}' "$DIR/../src/unload-mac.sh"
+  refute_output --partial "ps -ax"
 }
 
 # ~/.zsh_sessions is history too: Terminal's "reopen windows" restores each
