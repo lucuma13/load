@@ -244,8 +244,7 @@ fake_ps() {
 # and friends) but they all run out of the app bundle, so the bundle is what the
 # match is on - and they have to be found, or the wait for Chrome to exit would
 # return while its children were still up.
-@test "chrome_pids finds the browser
-and its helpers" {
+@test "chrome_pids finds the browser and its helpers" {
   fake_ps
   run chrome_pids
   assert_success
