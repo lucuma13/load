@@ -358,7 +358,7 @@ DefaultViewModeChoiceNew=Spectrogram'
 # from its end.)
 @test "AUDACITY_PREFS matches the list in load-win.ps1" {
   run awk '/^\$AUDACITY_PREFS = @\(/{f=1;next} f&&/^\)/{exit} f&&/"/{
-             gsub(/^[ \t]*"|",?[ \t]*$/,""); print }' "$DIR/../src/load-win.ps1"
+             gsub(/^[ \t]*"|",?[ \t\r]*$/,""); print }' "$DIR/../src/load-win.ps1"
   assert_success
   # Non-empty, so a silently non-matching awk can't make this pass vacuously.
   [ "${#lines[@]}" -gt 0 ]
