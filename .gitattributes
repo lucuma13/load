@@ -1,5 +1,14 @@
-# Never normalize EOLs on fixtures or src/data. These are byte-exact captures of
-# (and payloads for) Adobe's own files; a checkout that rewrote their EOLs would
-# be served straight to users by raw.githubusercontent.
-tests/fixtures/** -text
-src/data/**       -text
+# Default for all files
+* text=auto eol=lf
+
+# No EOL conversion (kept byte-exact)
+tests/fixtures/**  -text
+src/data/**        -text
+
+# Files that will always have CRLF line endings
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf
+*.psm1 text eol=crlf
+*.psd1 text eol=crlf
+*.ahk  text eol=crlf

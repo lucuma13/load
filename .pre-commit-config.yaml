@@ -21,6 +21,10 @@ repos:
       - id: end-of-file-fixer
       - id: mixed-line-ending
         args: [--fix=lf]
+        exclude: \.(bat|cmd|ps1|psm1|psd1)$
+      - id: mixed-line-ending
+        args: [--fix=crlf]
+        files: \.(bat|cmd|ps1|psm1|psd1)$
       - id: trailing-whitespace
         exclude: \.md$
       - id: check-executables-have-shebangs
@@ -73,7 +77,10 @@ repos:
       - id: powershell-format
         name: PowerShell format (Invoke-Formatter)
         language: system
-        entry: "pwsh -NoProfile -Command 'Get-ChildItem -Recurse -Path src,tests -Filter *.ps1 | ForEach-Object { $p = $_.FullName; $t = Get-Content -Raw -LiteralPath $p; $o = ((Invoke-Formatter -ScriptDefinition $t) -replace ([string][char]13 + [string][char]10), ([string][char]10)); if ($o -ne $t) { Set-Content -NoNewline -LiteralPath $p -Value $o -Encoding utf8NoBOM } }'"
+        # Emits CRLF, matching what .gitattributes checks out. Collapsing to lf
+        # first is what keeps the second replace from producing CR CR LF on the
+        # lines Invoke-Formatter already terminated with CRLF.
+        entry: "pwsh -NoProfile -Command 'Get-ChildItem -Recurse -Path src,tests -Filter *.ps1 | ForEach-Object { $p = $_.FullName; $t = Get-Content -Raw -LiteralPath $p; $lf = [string][char]10; $crlf = [string][char]13 + $lf; $o = (((Invoke-Formatter -ScriptDefinition $t) -replace $crlf, $lf) -replace $lf, $crlf); if ($o -ne $t) { Set-Content -NoNewline -LiteralPath $p -Value $o -Encoding utf8NoBOM } }'"
         files: \.ps1$
         pass_filenames: false
       - id: powershell-analyzer
