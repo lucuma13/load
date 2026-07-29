@@ -293,8 +293,7 @@ fake_ps() {
 
 # This phase is a quit and nothing more: Chrome stays installed, and the profile
 # is left exactly as it is.
-@test "clean_chrome removes nothing and uninstalls
-nothing" {
+@test "clean_chrome removes nothing and uninstalls nothing" {
   run awk '/^clean_chrome\(\) \{/{c=1} c{print} c&&/^\}/{exit}' "$DIR/../src/unload-mac.sh"
   assert_success
   refute_output --partial "rm_path"
