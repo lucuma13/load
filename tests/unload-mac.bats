@@ -85,9 +85,10 @@ setup() {
 # The bare command must reach every phase - that is the whole interface now.
 # The throwaway HOME holds no Premiere profile, so the workspace phase returns
 # before it would go to the network: this stays an offline test.
-@test "the bare command runs all five cleanup phases" {
+@test "the bare command runs all six cleanup phases" {
   run env HOME="$BATS_TEST_TMPDIR/home" bash "$DIR/../src/unload-mac.sh" --dry-run
   assert_success
+  assert_output --partial "Google Chrome"
   assert_output --partial "Work directory"
   assert_output --partial "Premiere Pro workspaces"
   assert_output --partial "Mister Horse"
@@ -221,6 +222,99 @@ setup() {
   for path in "${lines[@]}"; do
     under_home "$path" || fail "claude_state_paths yielded '$path', outside \$HOME"
   done
+}
+
+# -----------------------------------------------------------------------------
+# Google Chrome
+# -----------------------------------------------------------------------------
+
+# A stand-in for `ps -xo pid=,comm=`: chrome_pids calls `ps`, and a shell
+# function of that name takes precedence over the real one, so the parsing can
+# be exercised against a fixed process list.
+fake_ps() {
+  ps() {
+    echo "  501 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    echo "  502 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/140/Helpers/Google Chrome Helper (Renderer).app/Contents/MacOS/Google Chrome Helper (Renderer)"
+    echo "  503 /Applications/Safari.app/Contents/MacOS/Safari"
+    echo "  504 /Users/someone/Google Chrome notes/watcher"
+  }
+}
+
+# The helpers are separately named processes ("Google Chrome Helper (Renderer)"
+# and friends) but they all run out of the app bundle, so the bundle is what the
+# match is on - and they have to be found, or the wait for Chrome to exit would
+# return while its children were still up.
+@test "chrome_pids finds the browser
+and its helpers" {
+  fake_ps
+  run chrome_pids
+  assert_success
+  assert_line "501"
+  assert_line "502"
+}
+
+# Matching "Google Chrome" loosely anywhere in the path would sweep up whatever
+# else happens to carry the name - and every pid this yields is about to be sent
+# a kill.
+@test "chrome_pids ignores other browsers and paths that merely read like Chrome" {
+  fake_ps
+  run chrome_pids
+  refute_line "503"
+  refute_line "504"
+}
+
+# Quitting another user's browser is not this script's business: -x without -a is
+# this account's processes only.
+@test "chrome_pids looks only at this account's processes" {
+  run awk '/^chrome_pids\(\) \{/{c=1} c{print} c&&/^\}/{exit}' "$DIR/../src/unload-mac.sh"
+  refute_output --partial "ps -ax"
+}
+
+# A kill -9 costs the session: Chrome reopens with the "didn't shut down
+# correctly" bar and a half-written profile. The AppleScript quit is ⌘Q, which
+# saves the tabs - so it has to come first, with the kill only as the timeout.
+@test "quit_chrome asks Chrome to quit before it forces anything" {
+  local body quit force
+  body="$(awk '/^quit_chrome\(\) \{/{c=1} c{print} c&&/^\}/{exit}' "$DIR/../src/unload-mac.sh")"
+  quit="$(echo "$body" | grep -n 'osascript' | head -1 | cut -d: -f1)"
+  force="$(echo "$body" | grep -n 'kill -9' | head -1 | cut -d: -f1)"
+  [ -n "$quit" ] || fail "quit_chrome never asks Chrome to quit"
+  [ -n "$force" ] || fail "quit_chrome has no fallback for a Chrome that won't close"
+  [ "$quit" -lt "$force" ] || fail "quit_chrome forces the kill before asking"
+}
+
+# The wait has to be bounded. A "Leave site?" dialog can hold a quit up for as
+# long as nobody clicks it, and an unload that hangs behind it is worse than a
+# lost tab.
+@test "quit_chrome does not wait forever for Chrome to close" {
+  run awk '/^quit_chrome\(\) \{/{c=1} c{print} c&&/^\}/{exit}' "$DIR/../src/unload-mac.sh"
+  assert_output --partial "waited"
+  refute_output --partial "while true"
+}
+
+# This phase is a quit and nothing more: Chrome stays installed, and the profile
+# is left exactly as it is.
+@test "clean_chrome removes nothing and uninstalls
+nothing" {
+  run awk '/^clean_chrome\(\) \{/{c=1} c{print} c&&/^\}/{exit}' "$DIR/../src/unload-mac.sh"
+  assert_success
+  refute_output --partial "rm_path"
+  refute_output --partial "brew"
+  refute_output --partial "Application Support/Google"
+}
+
+# A dry run must not close the browser any more than it deletes a file, so the
+# --dry-run branch has to report and return ahead of both the quit and the kill.
+# quit_chrome lives below the library guard (it reads $DRY_RUN), so this is
+# asserted against the source text, as the Mister Horse ordering test is.
+@test "quit_chrome under --dry-run returns before it touches Chrome" {
+  local body dry act
+  body="$(awk '/^quit_chrome\(\) \{/{c=1} c{print} c&&/^\}/{exit}' "$DIR/../src/unload-mac.sh")"
+  echo "$body" | grep -q 'Would quit Google Chrome' || fail "quit_chrome has no --dry-run message"
+  dry="$(echo "$body" | grep -n 'if \$DRY_RUN' | head -1 | cut -d: -f1)"
+  act="$(echo "$body" | grep -n 'osascript\|kill -9' | head -1 | cut -d: -f1)"
+  [ -n "$dry" ] || fail "quit_chrome does not check DRY_RUN"
+  [ "$dry" -lt "$act" ] || fail "quit_chrome acts on Chrome before checking DRY_RUN"
 }
 
 # -----------------------------------------------------------------------------

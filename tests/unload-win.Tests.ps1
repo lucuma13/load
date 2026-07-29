@@ -303,6 +303,63 @@ Describe "Mister Horse sign-out" {
     }
 }
 
+# Quit Google Chrome the polite way, since a forced Chrome reopens with the
+# "didn't shut down correctly" bar and a half-written profile.
+Describe "Google Chrome" {
+    BeforeAll {
+        $script:unloadWin = Get-Content "$PSScriptRoot/../src/unload-win.ps1" -Raw
+        $script:stopBody = [regex]::Match($script:unloadWin, '(?s)function Stop-ChromeProcess \{.*?\n\}').Value
+        $script:clearBody = [regex]::Match($script:unloadWin, '(?s)function Clear-Chrome \{.*?\n\}').Value
+    }
+
+    # "chrome.exe" is the executable of every other Chromium build on the
+    # machine too, and quitting someone's Brave is not this script's business.
+    It "matches the browser by image path, not by process name alone" {
+        $body = [regex]::Match($script:unloadWin, '(?s)function Get-ChromeProcess \{.*?\n\}').Value
+        $body | Should -Not -BeNullOrEmpty -Because "Get-ChromeProcess should be findable"
+        $body | Should -BeLike "*ExecutablePath*"
+        $body | Should -BeLike "*Google*"
+    }
+
+    # CloseMainWindow is the same as clicking the X - the profile closes cleanly
+    # and the open tabs are saved - so it has to come first, with Stop-Process
+    # only as the timeout.
+    It "asks Chrome to close before it forces anything" {
+        $script:stopBody | Should -Not -BeNullOrEmpty -Because "Stop-ChromeProcess should be findable"
+        $script:stopBody | Should -BeLike "*CloseMainWindow*"
+        $script:stopBody.IndexOf('CloseMainWindow') | Should -BeLessThan $script:stopBody.IndexOf('Stop-Process')
+    }
+
+    # The wait has to be bounded. A "Leave site?" dialog can hold a close up for
+    # as long as nobody clicks it, and an unload that hangs behind it is worse
+    # than a lost tab.
+    It "does not wait forever for Chrome to close" {
+        $script:stopBody | Should -BeLike "*`$waited -lt 10*"
+        $script:stopBody | Should -Not -BeLike "*while (`$true)*"
+    }
+
+    # A dry run must not close the browser any more than it deletes a file.
+    It "reports and returns under --dry-run without touching Chrome" {
+        $script:stopBody | Should -BeLike "*Would quit Google Chrome*"
+        $script:stopBody.IndexOf('$DRY_RUN') | Should -BeLessThan $script:stopBody.IndexOf('CloseMainWindow')
+    }
+
+    # A quit and nothing more: Chrome stays installed and the profile - bookmarks,
+    # history, whoever is signed into it - is left exactly as it is.
+    It "removes nothing and uninstalls nothing" {
+        $script:clearBody | Should -Not -BeNullOrEmpty -Because "Clear-Chrome should be findable"
+        $script:clearBody | Should -Not -BeLike "*Remove-TargetPath*"
+        $script:clearBody | Should -Not -BeLike "*Uninstall-WingetPackage*"
+        $script:unloadWin | Should -Not -BeLike "*User Data*" -Because "the Chrome profile is not unload's to touch"
+    }
+
+    It "runs as its own phase in the dispatch block" {
+        $dispatch = [regex]::Match($script:unloadWin, '(?s)^try \{.*?\n\}', 'Multiline').Value
+        $dispatch | Should -Not -BeNullOrEmpty -Because "the dispatch block should be findable"
+        $dispatch | Should -BeLike "*Clear-Chrome*"
+    }
+}
+
 Describe "Claude Code target paths" {
     # ~\.claude is the whole point of the Claude target on a machine you're leaving:
     # it holds transcripts, per-project history, memory and the credentials file.

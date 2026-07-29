@@ -5,7 +5,7 @@ Windows workstation cleanup script
 .DESCRIPTION
 It removes custom setup - load-win's work directory, our Premiere Pro
 workspaces, AutoHotkey, claude-code, Mister Horse Product Manager sign-in, and
-the shell history.
+the shell history. And it quits Google Chrome.
 
 --dry-run is the only flag, to see the exact list before deleting.
 
@@ -68,6 +68,9 @@ function Show-Usage {
     Write-Host "    - Mister Horse Product Manager: signed out"
     Write-Host "    - Claude Code: signed out, uninstalled, and its local state wiped"
     Write-Host "    - the PowerShell (PSReadLine) command history"
+    Write-Host ""
+    Write-Host "  Quits, leaving the app and its profile in place:"
+    Write-Host "    - Google Chrome"
     Write-Host ""
     Write-Host "  Other apps installed by load are left in place. There is no confirmation"
     Write-Host "  prompt, so use --dry-run to print what would be removed and remove nothing."
@@ -438,6 +441,62 @@ function Clear-Ahk {
     }
 }
 
+# Get-ChromeProcess - every running Google Chrome process (the browser and the
+# renderer/GPU children beside it).
+#
+# Matched on the image PATH as well as the name: "chrome.exe" is also the
+# executable of every other Chromium build on the machine. The CIM lookup
+# is what supplies that path - Get-Process alone would throw reading .Path on a
+# process this account can't open - and the ids are then resolved back to
+# process objects, which is what Stop-ChromeProcess needs to close a window
+# politely.
+function Get-ChromeProcess {
+    $ids = @(Get-CimInstance Win32_Process -Filter "Name = 'chrome.exe'" -ErrorAction SilentlyContinue |
+            Where-Object { $_.ExecutablePath -and $_.ExecutablePath -match '(?i)\\Google\\Chrome' } |
+            ForEach-Object { $_.ProcessId })
+    if ($ids.Count -eq 0) { return @() }
+    return @(Get-Process -Id $ids -ErrorAction SilentlyContinue)
+}
+
+# Stop-ChromeProcess - ask Google Chrome to close, and force only what is left.
+#
+# Asked, not killed: a straight Stop-Process costs the session - Chrome comes
+# back with the "didn't shut down correctly" restore bar and a half-written
+# profile - whereas CloseMainWindow closes the profile cleanly and saves the
+# open tabs for next launch.
+function Stop-ChromeProcess {
+    $procs = @(Get-ChromeProcess)
+    if ($procs.Count -eq 0) { return $false }
+    if ($DRY_RUN) {
+        Removing "Would quit Google Chrome"
+        return $true
+    }
+    foreach ($p in $procs) {
+        if ($p.MainWindowHandle -ne [System.IntPtr]::Zero) { $p.CloseMainWindow() | Out-Null }
+    }
+    $left = @(Get-ChromeProcess)
+    $waited = 0
+    while ($left.Count -gt 0 -and $waited -lt 10) {
+        Start-Sleep -Seconds 1
+        $waited++
+        $left = @(Get-ChromeProcess)
+    }
+    if ($left.Count -gt 0) {
+        foreach ($p in $left) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
+        Removing "Quit Google Chrome - it did not close on its own, so it was forced"
+    }
+    else {
+        Removing "Quit Google Chrome"
+    }
+    return $true
+}
+
+# Clear-Chrome - quit Google Chrome.
+function Clear-Chrome {
+    Section "Google Chrome"
+    if (-not (Stop-ChromeProcess)) { Kept "Not running" }
+}
+
 # Get-MisterHorseProcess - every running Mister Horse process (the Product
 # Manager and the crash handler that sits beside it).
 #
@@ -553,6 +612,9 @@ try {
     # AutoHotkey first, and deliberately: it quits every interpreter, so by the time
     # the work directory goes nothing is running out of it.
     Clear-Ahk
+    # Chrome next: quitting it is the one step that interrupts what the user is
+    # looking at, so it happens up front rather than partway through the run.
+    Clear-Chrome
     Clear-WorkDir
     Clear-PremiereWorkspace
     Clear-MisterHorse

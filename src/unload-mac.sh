@@ -6,7 +6,7 @@
 #
 # It removes custom setup — load-mac's work directory, our Premiere Pro
 # workspace templates, the Mister Horse Product Manager sign-in, Claude Code and
-# the shell history.
+# the shell history. And it quits Google Chrome.
 #
 # Usage: --dry-run is the only option, and the way to see the exact list of
 # paths first:
@@ -51,6 +51,9 @@ usage() {
   echo "    - the Mister Horse Product Manager sign-in" >&2
   echo "    - claude-code" >&2
   echo "    - shell history" >&2
+  echo "" >&2
+  echo "  Quits (leaving the app and its data in place):" >&2
+  echo "    - Google Chrome" >&2
   echo "" >&2
 }
 
@@ -148,6 +151,18 @@ misterhorse_state_paths() {
 # Product Manager and the helpers beside it).
 misterhorse_pids() {
   ps -xo pid=,comm= | awk 'tolower($0) ~ /mister ?horse/ { print $1 }'
+}
+
+# chrome_pids — echo the pid of every running Google Chrome process (the browser
+# and the renderer/GPU helpers beside it).
+#
+# Matched on the executable path like misterhorse_pids, because that is what
+# `comm` prints: the helpers are named "Google Chrome Helper (Renderer)" and the
+# like, but every one of them runs out of Google Chrome.app, so the bundle is
+# the thing to match. Anchored on ".app/" so a checkout or a download that
+# merely has "Google Chrome" in its path can't be mistaken for the browser.
+chrome_pids() {
+  ps -xo pid=,comm= | awk '/Google Chrome\.app\// { print $1 }'
 }
 
 # WS_API — the repo's src/data listing, where the workspaces `load-mac` drops
@@ -276,6 +291,43 @@ clean_premiere_workspaces() {
   $did || nothing_to_do
 }
 
+# quit_chrome — ask Google Chrome to quit, and return 1 when it wasn't running.
+#
+# Asked, not killed: `kill -9` costs the session — Chrome comes back with the
+# "didn't shut down correctly" restore bar and a half-written profile — whereas
+# an AppleScript quit closes the profile cleanly and saves
+# the open tabs for next launch.
+quit_chrome() {
+  local waited=0 left
+  # No process count in the messages below, unlike the Mister Horse phase: Chrome
+  # runs a helper per tab, so a couple of windows is twenty-odd processes and a
+  # number there would read as twenty-odd windows about to close.
+  [ -n "$(chrome_pids)" ] || return 1
+  if $DRY_RUN; then
+    removing "Would quit Google Chrome"
+    return 0
+  fi
+  osascript -e 'tell application "Google Chrome" to quit' &>/dev/null || true
+  while [ "$waited" -lt 10 ]; do
+    left="$(chrome_pids)"
+    [ -n "$left" ] || break
+    sleep 1
+    waited=$((waited + 1))
+  done
+  if [ -n "$left" ]; then
+    echo "$left" | xargs kill -9 2>/dev/null || true
+    removing "Quit Google Chrome — it did not close on its own, so it was forced"
+  else
+    removing "Quit Google Chrome"
+  fi
+}
+
+# clean_chrome — quit Google Chrome.
+clean_chrome() {
+  section "Google Chrome"
+  quit_chrome || kept "Not running"
+}
+
 # quit_misterhorse — quit the Product Manager so the sign-out below sticks, and
 # return 1 when nothing was running.
 quit_misterhorse() {
@@ -402,6 +454,7 @@ main() {
     echo ""
   fi
 
+  clean_chrome
   clean_workdir
   clean_premiere_workspaces
   clean_misterhorse
