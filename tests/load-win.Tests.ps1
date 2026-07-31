@@ -554,9 +554,10 @@ Describe "Explorer default folder view" -Skip:(-not $IsWindowsHost) {
             $k = Join-Path $bagRoots[0] "AllFolders\Shell\$FOLDERTYPE_DOWNLOADS"
             New-Item -Path $k -Force | Out-Null
             Set-ItemProperty -LiteralPath $k -Name 'GroupView' -Value 0xffffffff -Type DWord
+            $before = (Get-ItemProperty -LiteralPath $k).GroupView
 
             Repair-FolderGrouping $bagRoots | Should -BeFalse
-            (Get-ItemProperty -LiteralPath $k).GroupView | Should -Be 0xffffffff
+            (Get-ItemProperty -LiteralPath $k).GroupView | Should -Be $before
         }
     }
 
