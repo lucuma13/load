@@ -339,9 +339,13 @@ Describe "Google Chrome" {
     }
 
     # A dry run must not close the browser any more than it deletes a file.
+    # Stop-ChromeProcess itself stays silent (Clear-Chrome reports the single
+    # phase-level line via Report), so what's pinned here is that the
+    # $DRY_RUN early-return comes before CloseMainWindow is ever reached, and
+    # that Clear-Chrome's own report line names the dry-run wording.
     It "reports and returns under --dry-run without touching Chrome" {
-        $script:stopBody | Should -BeLike "*Would quit Google Chrome*"
         $script:stopBody.IndexOf('$DRY_RUN') | Should -BeLessThan $script:stopBody.IndexOf('CloseMainWindow')
+        $script:clearBody | Should -BeLike "*Would quit Google Chrome*"
     }
 
     # A quit and nothing more: Chrome stays installed and the profile - bookmarks,
@@ -370,6 +374,15 @@ Describe "Claude Code target paths" {
         $paths | Should -Contain "$HOME\.claude.json.backup"
     }
 
+    # The native installer keeps its own state/share dirs under ~\.local,
+    # separate from ~\.claude - both must go or a reinstall on the same
+    # machine would inherit stale state.
+    It "covers the native installer's state/share dirs" {
+        $paths = Get-ClaudeStatePath
+        $paths | Should -Contain "$HOME\.local\share\claude"
+        $paths | Should -Contain "$HOME\.local\state\claude"
+    }
+
     # The Claude desktop app is a separate product that may well belong to someone
     # else on a shared machine. Only the CLI's own state is in scope, so %APPDATA%\Claude
     # must never creep into the list.
@@ -381,6 +394,32 @@ Describe "Claude Code target paths" {
         foreach ($path in Get-ClaudeStatePath) {
             Test-UnderHome $path | Should -BeTrue -Because "'$path' would be refused by Remove-TargetPath"
         }
+    }
+}
+
+# The native installer's binary sits inside ~\.local\bin, a folder this
+# machine can share with unrelated per-user tools (uv shims for
+# triplecheck/mhl-suite land there too) - so the removal target has to be the
+# exact filename, never the folder.
+Describe "Claude Code native installer binary" {
+    BeforeAll {
+        $script:unloadWin = Get-Content "$PSScriptRoot/../src/unload-win.ps1" -Raw
+        $script:clearBody = [regex]::Match($script:unloadWin, '(?s)function Clear-Claude \{.*?\n\}').Value
+    }
+
+    It "targets the exact filename under ~\.local\bin" {
+        Get-ClaudeNativeExePath | Should -Be "$HOME\.local\bin\claude.exe"
+    }
+
+    It "yields a path the delete guard will accept" {
+        Test-UnderHome (Get-ClaudeNativeExePath) | Should -BeTrue
+    }
+
+    It "removes only that file, never the whole ~\.local\bin folder" {
+        $clearBody | Should -Not -BeNullOrEmpty -Because "Clear-Claude should be findable"
+        $clearBody | Should -BeLike "*Get-ClaudeNativeExePath*"
+        $clearBody | Should -Not -BeLike '*Remove-TargetPath "$HOME\.local\bin"*'
+        $clearBody | Should -Not -BeLike '*.local\bin*claude*.exe*wildcard*'
     }
 }
 

@@ -162,7 +162,22 @@ function Get-ClaudeStatePath {
     # Test-UnderHome then refuses with a warning - a confusing complaint about a
     # path we invented ourselves.
     if ($env:LOCALAPPDATA) { $paths += "$env:LOCALAPPDATA\claude-cli-nodejs" }
+    # The native installer's own state/share dirs (XDG-style layout under
+    # ~\.local), distinct from ~\.claude above, which every install method
+    # writes to regardless of how the CLI itself got onto the machine.
+    $paths += "$HOME\.local\share\claude"
+    $paths += "$HOME\.local\state\claude"
     return $paths
+}
+
+# Get-ClaudeNativeExePath - the CLI's own binary when installed via Anthropic's
+# native installer, which drops a single claude.exe into ~\.local\bin.
+#
+# That folder is shared with other per-user tools this machine may have (uv
+# tool shims for triplecheck/mhl-suite land there too), so only this one
+# filename is ever a removal target - never the folder itself.
+function Get-ClaudeNativeExePath {
+    return "$HOME\.local\bin\claude.exe"
 }
 
 # Get-MisterHorseStatePath - the per-user state Mister Horse keeps, which on
@@ -284,11 +299,20 @@ $CLAUDE_PKG = "Anthropic.ClaudeCode"
 # of the installed apps in place.
 $AHK_PKG = "AutoHotkey.AutoHotkey"
 
-function Section { param($msg); Write-Host ("  " + $msg) }
-function Removing { param($msg); Write-Host ("  " + "[removing]".PadRight(12) + $msg) }
-function Kept { param($msg); Write-Host ("  " + "[ok]".PadRight(12) + $msg) }
-function NothingToDo { Write-Host ("  " + "[ok]".PadRight(12) + "Nothing to remove") }
 function Note { param($msg); Write-Host ("  " + "[note]".PadRight(12) + $msg) }
+
+# Report -Did -DoneMsg -WouldMsg -SkipMsg - the one status line each cleanup
+# phase prints, chosen from whichever of the three fits what actually happened:
+# something was removed, something would be removed (--dry-run), or there was
+# nothing there to begin with. Centralised here so every phase reports in the
+# same one-line-per-phase shape rather than each printing its own header plus a
+# line per item removed.
+function Report {
+    param([bool]$Did, [string]$DoneMsg, [string]$WouldMsg, [string]$SkipMsg)
+    if (-not $Did) { Write-Host ("  " + "[skipped]".PadRight(12) + $SkipMsg); return }
+    if ($DRY_RUN) { Write-Host ("  " + "[would]".PadRight(12) + $WouldMsg) }
+    else { Write-Host ("  " + "[done]".PadRight(12) + $DoneMsg) }
+}
 
 # Get-DisplayPath <path> - shorten a path under $HOME to ~\... for display.
 # Presentation only; never feed the result back to a cmdlet.
@@ -302,10 +326,12 @@ function Get-DisplayPath {
 }
 
 # Remove-TargetPath <path> - remove a file or directory tree, honouring
-# --dry-run. Prints exactly one line whether it deletes or only previews, so a
-# dry run's output is precisely what a real run would do. Returns $false and
-# stays silent when there is nothing there, so callers can distinguish "cleaned"
-# from "already clean" and report an empty section as such.
+# --dry-run. Silent on success or on a dry-run preview - the calling phase
+# reports its own single status line (see Report) - but still prints a [warn]
+# for the two cases worth interrupting that line for: a path outside the
+# profile, or one Windows wouldn't let go of. Returns $false and stays silent
+# when there is nothing there, so callers can distinguish "cleaned" from
+# "already clean" and report an empty phase as such.
 function Remove-TargetPath {
     param([string]$Path)
     if (-not $Path) { return $false }
@@ -314,16 +340,12 @@ function Remove-TargetPath {
         Write-Host "  [warn] Refusing to remove '$Path' - outside the user profile"
         return $false
     }
-    if ($DRY_RUN) {
-        Removing "Would remove $(Get-DisplayPath $Path)"
-        return $true
-    }
+    if ($DRY_RUN) { return $true }
     Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue
     if (Test-Path -LiteralPath $Path) {
         Write-Host "  [warn] Could not remove $(Get-DisplayPath $Path) - a program may be holding it open"
         return $false
     }
-    Removing "Removed $(Get-DisplayPath $Path)"
     return $true
 }
 
@@ -343,16 +365,10 @@ function Test-WingetPackage($id) {
 # its own exit code.
 function Uninstall-WingetPackage($id, $label) {
     if (-not (Test-WingetPackage $id)) { return $false }
-    if ($DRY_RUN) {
-        Removing "Would uninstall $label (winget package '$id')"
-        return $true
-    }
+    if ($DRY_RUN) { return $true }
 
     winget uninstall --id $id --exact --silent --accept-source-agreements 2>&1 | Out-Null
-    if (-not (Test-WingetPackage $id)) {
-        Removing "Uninstalled $label"
-        return $true
-    }
+    if (-not (Test-WingetPackage $id)) { return $true }
 
     try {
         Start-Process cmd.exe -Verb RunAs -Wait -ArgumentList (
@@ -361,8 +377,8 @@ function Uninstall-WingetPackage($id, $label) {
     catch {
         Write-Host "  [warn] Elevated uninstall did not run (admin prompt cancelled?): $_"
     }
-    if (-not (Test-WingetPackage $id)) { Removing "Uninstalled $label (needed admin)" }
-    else { Write-Host "  [warn] Could not uninstall $label - remove it from Settings > Apps by hand" }
+    if (-not (Test-WingetPackage $id)) { return $true }
+    Write-Host "  [warn] Could not uninstall $label - remove it from Settings > Apps by hand"
     return $true
 }
 
@@ -381,12 +397,8 @@ function Uninstall-WingetPackage($id, $label) {
 function Stop-AhkProcess {
     $procs = @(Get-CimInstance Win32_Process -Filter "Name LIKE 'AutoHotkey%'" -ErrorAction SilentlyContinue)
     if ($procs.Count -eq 0) { return $false }
-    if ($DRY_RUN) {
-        Removing "Would quit $($procs.Count) running AutoHotkey process(es)"
-        return $true
-    }
+    if ($DRY_RUN) { return $true }
     foreach ($p in $procs) { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue }
-    Removing "Quit $($procs.Count) running AutoHotkey process(es)"
     return $true
 }
 
@@ -394,20 +406,21 @@ function Stop-AhkProcess {
 # and a copy of load-win.ps1 stranded in %TEMP% (see $LoadTempCopy). Both are
 # load's own leavings, so they go together.
 function Clear-WorkDir {
-    Section "Work files ($(Get-DisplayPath $WorkDir), plus any load-win.ps1 in %TEMP%)"
     $cleared = Remove-TargetPath $WorkDir
     if ($LoadTempCopy) { $cleared = (Remove-TargetPath $LoadTempCopy) -or $cleared }
-    if (-not $cleared) { NothingToDo }
+    Report -Did $cleared -DoneMsg "Removed work files/directory" -WouldMsg "Would remove work files/directory" -SkipMsg "Work files - Nothing to remove"
 }
 
 # Clear-PremiereWorkspace - remove our workspace files into Premiere profile's
 # Layouts folders.
 function Clear-PremiereWorkspace {
-    Section "Premiere Pro workspaces"
     $dirs = @(Get-PremiereLayoutDir)
     # No Premiere profile means nothing to remove - and no reason to go to the
     # network for the list.
-    if ($dirs.Count -eq 0) { NothingToDo; return }
+    if ($dirs.Count -eq 0) {
+        Report -Did $false -SkipMsg "Premiere Pro workspaces - Nothing to remove"
+        return
+    }
 
     $names = @(Get-WorkspaceFileName)
     if ($names.Count -eq 0) {
@@ -421,16 +434,15 @@ function Clear-PremiereWorkspace {
             if (Remove-TargetPath (Join-Path $dir $name)) { $did = $true }
         }
     }
-    if (-not $did) { NothingToDo }
+    Report -Did $did -DoneMsg "Removed Premiere Pro workspaces" -WouldMsg "Would remove Premiere Pro workspaces" -SkipMsg "Premiere Pro workspaces - Nothing to remove"
 }
 
 # Clear-Ahk - quit AutoHotkey and uninstall it.
 function Clear-Ahk {
-    Section "AutoHotkey"
     $did = $false
     if (Stop-AhkProcess) { $did = $true }
     if (Uninstall-WingetPackage $AHK_PKG "AutoHotkey") { $did = $true }
-    if (-not $did) { NothingToDo }
+    Report -Did $did -DoneMsg "Uninstalled AutoHotkey" -WouldMsg "Would uninstall AutoHotkey" -SkipMsg "AutoHotkey - Nothing to remove"
 
     # Still on disk after the uninstall means it was installed some other way (the
     # .exe/.zip build from autohotkey.com rather than winget), which this script
@@ -467,10 +479,7 @@ function Get-ChromeProcess {
 function Stop-ChromeProcess {
     $procs = @(Get-ChromeProcess)
     if ($procs.Count -eq 0) { return $false }
-    if ($DRY_RUN) {
-        Removing "Would quit Google Chrome"
-        return $true
-    }
+    if ($DRY_RUN) { return $true }
     foreach ($p in $procs) {
         if ($p.MainWindowHandle -ne [System.IntPtr]::Zero) { $p.CloseMainWindow() | Out-Null }
     }
@@ -483,18 +492,16 @@ function Stop-ChromeProcess {
     }
     if ($left.Count -gt 0) {
         foreach ($p in $left) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
-        Removing "Quit Google Chrome - it did not close on its own, so it was forced"
-    }
-    else {
-        Removing "Quit Google Chrome"
     }
     return $true
 }
 
-# Clear-Chrome - quit Google Chrome.
+# Clear-Chrome - quit Google Chrome. Never uninstalled - the app and its
+# profile (bookmarks, history, whoever is signed in) are left exactly as they
+# are, unlike every other phase here.
 function Clear-Chrome {
-    Section "Google Chrome"
-    if (-not (Stop-ChromeProcess)) { Kept "Not running" }
+    $did = Stop-ChromeProcess
+    Report -Did $did -DoneMsg "Quit Google Chrome" -WouldMsg "Would quit Google Chrome" -SkipMsg "Google Chrome - Not running"
 }
 
 # Get-MisterHorseProcess - every running Mister Horse process (the Product
@@ -522,12 +529,8 @@ function Stop-MisterHorseProcess {
     # reading .Count off $null is an error rather than a zero.
     $procs = @(Get-MisterHorseProcess)
     if ($procs.Count -eq 0) { return $false }
-    if ($DRY_RUN) {
-        Removing "Would quit $($procs.Count) running Mister Horse process(es)"
-        return $true
-    }
+    if ($DRY_RUN) { return $true }
     foreach ($p in $procs) { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue }
-    Removing "Quit $($procs.Count) running Mister Horse process(es)"
     return $true
 }
 
@@ -535,13 +538,12 @@ function Stop-MisterHorseProcess {
 # installed. See Get-MisterHorseStatePath for why removing that state is the
 # sign-out.
 function Clear-MisterHorse {
-    Section "Mister Horse (Animation Composer)"
     $did = $false
     if (Stop-MisterHorseProcess) { $did = $true }
     foreach ($path in Get-MisterHorseStatePath) {
         if (Remove-TargetPath $path) { $did = $true }
     }
-    if (-not $did) { NothingToDo }
+    Report -Did $did -DoneMsg "Signed out of Mister Horse Product Manager" -WouldMsg "Would sign out of Mister Horse Product Manager" -SkipMsg "Mister Horse Product Manager - Nothing to remove"
 
     # A panel open inside a running Premiere or After Effects has the same
     # session in memory and writes its own copy back when the host quits, so a
@@ -557,45 +559,46 @@ function Clear-MisterHorse {
 }
 
 function Clear-Claude {
-    Section "Claude Code"
     $did = $false
 
     # Uninstall before wiping state, so a half-removed install can't confuse
     # winget's own uninstall.
     if (Uninstall-WingetPackage $CLAUDE_PKG "Claude Code") { $did = $true }
 
+    # The native installer's binary, removed by exact filename only - see
+    # Get-ClaudeNativeExePath for why the containing folder is never touched.
+    if (Remove-TargetPath (Get-ClaudeNativeExePath)) { $did = $true }
+
     foreach ($path in Get-ClaudeStatePath) {
         if (Remove-TargetPath $path) { $did = $true }
     }
 
-    if (-not $did) { NothingToDo }
+    Report -Did $did -DoneMsg "Uninstalled Claude" -WouldMsg "Would uninstall Claude" -SkipMsg "Claude Code - Nothing to remove"
 
-    # A `claude` still on PATH after all that was installed some other way - the
-    # native installer (~\.local\bin) or a global npm package - which this
-    # script deliberately doesn't touch. Say so rather than let a "cleaned"
-    # summary imply the machine is clear. Skipped on a dry run, where nothing
-    # has been removed yet and the binary is still there by definition.
+    # A `claude` still on PATH after all that was installed some other way - a
+    # global npm package, most likely - which this script deliberately doesn't
+    # touch. Say so rather than let a "cleaned" summary imply the machine is
+    # clear. Skipped on a dry run, where nothing has been removed yet and the
+    # binary is still there by definition.
     if (-not $DRY_RUN) {
         $claude = Get-Command claude -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source
-        if ($claude) { Note "'claude' is still on PATH at $claude - not a winget install; remove it by hand" }
+        if ($claude) { Note "'claude' is still on PATH at $claude - not a winget or native install; remove it by hand" }
     }
 }
 
 function Clear-ShellHistory {
-    Section "Shell history"
     $did = $false
     foreach ($path in Get-HistoryPath) {
         if (Remove-TargetPath $path) { $did = $true }
     }
-    if (-not $did) { NothingToDo }
 
     # The console you launched this from holds its own commands in memory and
     # PSReadLine appends them to a fresh history file as you keep typing -
     # including the command that ran this script. Clear-History empties this
     # session's buffer; a console that outlives this script is the caller's to
-    # close, so say so rather than leave a file to quietly reappear.
+    # close, so the final summary line says so.
     if (-not $DRY_RUN) { Clear-History -ErrorAction SilentlyContinue }
-    Note "Close this console when you're done - PSReadLine re-writes its history file as you type."
+    Report -Did $did -DoneMsg "Cleared shell history" -WouldMsg "Would clear shell history" -SkipMsg "Shell history - Nothing to remove"
 }
 
 # -----------------------------------------------------------------------------
@@ -623,7 +626,7 @@ try {
 
     Write-Host ""
     if ($DRY_RUN) { Write-Host "  Dry run complete - re-run without --dry-run to remove the above." }
-    else { Kept "Cleanup complete. Other apps installed by load were left in place." }
+    else { Write-Host "  You're clean now! Close this console when you're done - PSReadLine re-writes its history file as you type." }
     Write-Host ""
 }
 finally {

@@ -1421,7 +1421,7 @@ function Invoke-ElevatedInstall {
     }
     catch {
         $elevated = $false
-        Write-Host "  [warn] Elevated install step did not run (admin prompt cancelled?): $_"
+        Write-Host "  [warn] Elevated install step did not run: operation cancelled by the user. Continuing with standard privileges instead."
     }
 
     # Each plugin re-checked against its uninstall entry, because nothing above
@@ -1473,7 +1473,7 @@ function Invoke-SlowPass {
     if (-not $elevated -and $WINGET_OK) {
         foreach ($id in $PORTABLE_FALLBACK_PKGS) {
             if (-not (Test-PkgReallyInstalled $id)) {
-                Write-Host "  [info] No admin rights - installing $(Get-PkgAlias $id) as a portable, per-user fallback. Re-run with admin available to get the full install."
+                Write-Host "  [warn] Installing $(Get-PkgAlias $id) as a portable, per-user fallback. Re-run with admin available to get the full install."
                 Invoke-WingetApply $id "user"
             }
         }
