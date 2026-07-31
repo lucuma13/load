@@ -358,16 +358,26 @@ Describe "Get-UserFolder (known-folder redirection)" -Skip:(-not $IsWindowsHost)
 
 # The default folder view is a set of registry facts that have to agree, none of
 # which is readable as a plain "sort by" setting: an opaque Sort blob and a
-# GroupView/GroupByKey pair per folder type, plus the ABSENCE of FolderType in a
-# second Bags tree. Each blob is decoded here field by field so a typo in 44
-# hand-written bytes fails as "sorts by the wrong column" rather than as a
-# folder view nobody notices is wrong.
+# GroupView/GroupByKey pair per folder type, plus the ABSENCE of FolderType in
+# a second Bags tree, PLUS - separately - whatever GroupView an actual
+# per-folder bag currently holds, since Downloads does not reliably take that
+# value from the template. Each Sort blob is decoded field by field so
+# a typo in 44 hand-written bytes fails as "sorts by the wrong column" rather
+# than as a folder view nobody notices is wrong.
 Describe "Explorer default folder view" -Skip:(-not $IsWindowsHost) {
     BeforeAll {
         $script:baseKey = 'HKCU:\Software\ZZLoadWinViewProbe\Base'
         $script:typeKey = 'HKCU:\Software\ZZLoadWinViewProbe\Type'
+        # A probe root for Test-NoFolderGrouping/Repair-FolderGrouping,
+        # standing in for this machine's real Bags trees - without it, these
+        # would also be reading (or patching!) this machine's actual, live
+        # shellbags, and a test could fail on an otherwise clean probe state,
+        # or pass by accident on a machine whose real Downloads folder happens
+        # to be ungrouped.
+        $script:bagRoots = @('HKCU:\Software\ZZLoadWinViewProbe\Bags')
         New-Item -Path $script:baseKey -Force | Out-Null
         New-Item -Path $script:typeKey -Force | Out-Null
+        New-Item -Path $script:bagRoots[0] -Force | Out-Null
 
         # Put the probe keys in the state Set-ExplorerDefaultView would leave
         # them in: every template written, and no FolderType override.
@@ -397,6 +407,7 @@ Describe "Explorer default folder view" -Skip:(-not $IsWindowsHost) {
         Remove-Item -LiteralPath 'HKCU:\Software\ZZLoadWinViewProbe' -Recurse -Force -ErrorAction SilentlyContinue
         New-Item -Path $script:baseKey -Force | Out-Null
         New-Item -Path $script:typeKey -Force | Out-Null
+        New-Item -Path $script:bagRoots[0] -Force | Out-Null
     }
 
     Context "the Sort blobs" {
@@ -471,6 +482,84 @@ Describe "Explorer default folder view" -Skip:(-not $IsWindowsHost) {
         }
     }
 
+    Context "Test-NoFolderGrouping" {
+        It "is true when no per-folder bag exists yet" {
+            Test-NoFolderGrouping $bagRoots | Should -BeTrue
+        }
+
+        It "is true when an existing bag is already ungrouped" {
+            $k = Join-Path $bagRoots[0] "2\Shell\$FOLDERTYPE_DOWNLOADS"
+            New-Item -Path $k -Force | Out-Null
+            Set-ItemProperty -LiteralPath $k -Name 'GroupView' -Value 0 -Type DWord
+            Test-NoFolderGrouping $bagRoots | Should -BeTrue
+        }
+
+        # The exact scenario this exists to catch: Windows recreates a
+        # per-folder bag for the Downloads type grouped by Date modified,
+        # independent of what the AllFolders template's GroupView says - see
+        # the section header comment. A real machine's own bags reproduced
+        # this byte-for-byte (GroupView 0xffffffff, GroupByKey:PID 14).
+        It "is false when an existing Downloads-type bag is grouped" {
+            $k = Join-Path $bagRoots[0] "2\Shell\$FOLDERTYPE_DOWNLOADS"
+            New-Item -Path $k -Force | Out-Null
+            Set-ItemProperty -LiteralPath $k -Name 'GroupView' -Value 0xffffffff -Type DWord
+            Set-ItemProperty -LiteralPath $k -Name 'GroupByKey:PID' -Value 14 -Type DWord
+            Test-NoFolderGrouping $bagRoots | Should -BeFalse
+        }
+
+        It "ignores the AllFolders template itself, not a per-folder instance" {
+            $k = Join-Path $bagRoots[0] "AllFolders\Shell\$FOLDERTYPE_DOWNLOADS"
+            New-Item -Path $k -Force | Out-Null
+            Set-ItemProperty -LiteralPath $k -Name 'GroupView' -Value 0xffffffff -Type DWord
+            Test-NoFolderGrouping $bagRoots | Should -BeTrue
+        }
+    }
+
+    Context "Repair-FolderGrouping" {
+        It "changes nothing, and reports no change, when no bag is grouped" {
+            Repair-FolderGrouping $bagRoots | Should -BeFalse
+        }
+
+        # The verified fix: patch the existing bag in place rather than delete
+        # it. A real machine's Downloads bag stayed ungrouped across a genuine
+        # open-and-close cycle after exactly this patch, where deleting the bag
+        # and letting Explorer recreate it did not - so this must edit, never
+        # remove, the key.
+        It "clears an existing grouped bag in place" {
+            $k = Join-Path $bagRoots[0] "2\Shell\$FOLDERTYPE_DOWNLOADS"
+            New-Item -Path $k -Force | Out-Null
+            Set-ItemProperty -LiteralPath $k -Name 'GroupView' -Value 0xffffffff -Type DWord
+            Set-ItemProperty -LiteralPath $k -Name 'GroupByKey:PID' -Value 14 -Type DWord
+
+            Repair-FolderGrouping $bagRoots | Should -BeTrue
+
+            Test-Path -LiteralPath $k | Should -BeTrue -Because 'the bag must be patched, not deleted'
+            (Get-ItemProperty -LiteralPath $k).GroupView | Should -Be 0
+            (Get-ItemProperty -LiteralPath $k).'GroupByKey:PID' | Should -Be 0
+        }
+
+        It "leaves an already-ungrouped bag alone" {
+            $k = Join-Path $bagRoots[0] "2\Shell\$FOLDERTYPE_DOWNLOADS"
+            New-Item -Path $k -Force | Out-Null
+            Set-ItemProperty -LiteralPath $k -Name 'GroupView' -Value 0 -Type DWord
+            Set-ItemProperty -LiteralPath $k -Name 'Sort' -Value $SORT_BY_DATE_MODIFIED_DESC -Type Binary
+
+            Repair-FolderGrouping $bagRoots | Should -BeFalse
+
+            (Get-ItemProperty -LiteralPath $k).Sort -join ',' | Should -Be ($SORT_BY_DATE_MODIFIED_DESC -join ',') -Because (
+                'only GroupView/GroupByKey should ever be touched')
+        }
+
+        It "never touches the AllFolders template itself" {
+            $k = Join-Path $bagRoots[0] "AllFolders\Shell\$FOLDERTYPE_DOWNLOADS"
+            New-Item -Path $k -Force | Out-Null
+            Set-ItemProperty -LiteralPath $k -Name 'GroupView' -Value 0xffffffff -Type DWord
+
+            Repair-FolderGrouping $bagRoots | Should -BeFalse
+            (Get-ItemProperty -LiteralPath $k).GroupView | Should -Be 0xffffffff
+        }
+    }
+
     Context "Test-ExplorerDefaultView" {
         It "is true once every template is ours" {
             Set-ProbeApplied
@@ -495,7 +584,7 @@ Describe "Explorer default folder view" -Skip:(-not $IsWindowsHost) {
         It "is false when <Name>" -ForEach @(
             @{ Name = 'a generic folder sorts by Date modified'; Break = 'sort' }
             @{ Name = 'Downloads was left on Name like everything else'; Break = 'downloads' }
-            @{ Name = 'grouping is still on'; Break = 'group' }
+            @{ Name = 'grouping is still on in the template'; Break = 'group' }
             @{ Name = 'an older run left FolderType pinned'; Break = 'foldertype' }
         ) {
             Set-ProbeApplied
@@ -510,6 +599,31 @@ Describe "Explorer default folder view" -Skip:(-not $IsWindowsHost) {
                 'foldertype' { Set-ItemProperty -LiteralPath $typeKey -Name 'FolderType' -Value 'NotSpecified' -Type String }
             }
             Test-ExplorerDefaultView $baseKey $typeKey | Should -BeFalse
+        }
+    }
+
+    # The combined, checklist-facing check - deliberately a THIN wrapper kept
+    # separate from Test-ExplorerDefaultView (see that function's comment and
+    # Test-ExplorerViewFullyApplied's in load-win.ps1): folding grouping drift
+    # into the function that gates Set-ExplorerDefaultView's bag wipe would make
+    # a plain re-open of Downloads trigger a full reset-and-restart on the next
+    # run, which is what broke the fix in the first place.
+    Context "Test-ExplorerViewFullyApplied" {
+        It "is true once the templates are ours and nothing is grouped" {
+            Set-ProbeApplied
+            Test-ExplorerViewFullyApplied $baseKey $typeKey $bagRoots | Should -BeTrue
+        }
+
+        It "is false when the templates are right but a real bag is grouped" {
+            Set-ProbeApplied
+            $k = Join-Path $bagRoots[0] "2\Shell\$FOLDERTYPE_DOWNLOADS"
+            New-Item -Path $k -Force | Out-Null
+            Set-ItemProperty -LiteralPath $k -Name 'GroupView' -Value 0xffffffff -Type DWord
+            Test-ExplorerViewFullyApplied $baseKey $typeKey $bagRoots | Should -BeFalse
+        }
+
+        It "is false when the templates themselves are wrong, even with nothing grouped" {
+            Test-ExplorerViewFullyApplied $baseKey $typeKey $bagRoots | Should -BeFalse
         }
     }
 
@@ -529,7 +643,9 @@ Describe "Explorer default folder view" -Skip:(-not $IsWindowsHost) {
         # Re-introducing this would be silent: every folder type still gets its
         # template written, the run still reports success, and Downloads still sorts by
         # Name because it is no longer typed as Downloads. Asserted against the source
-        # because the damage is a write that must NOT happen.
+        # because the damage is a write that must NOT happen. (Pinning FolderType was
+        # tried again, deliberately, while chasing the grouping bug this section fixes -
+        # and confirmed live to make Downloads WORSE, not better - so this guard stands.)
         It "never pins FolderType, which would starve the Downloads template" {
             $fn = $ast.FindAll({ param($n)
                     $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
@@ -538,6 +654,21 @@ Describe "Explorer default folder view" -Skip:(-not $IsWindowsHost) {
                 'pinning every folder to Generic stops Downloads reaching its own template')
             $fn.Extent.Text | Should -Match 'Remove-ItemProperty[^\r\n]*FolderType' -Because (
                 'a previous version wrote it, so applying the new view has to undo that')
+        }
+
+        # Set-ExplorerDefaultView must gate on the templates alone, NOT on
+        # grouping drift. If it gated on Test-ExplorerViewFullyApplied instead,
+        # a plain re-open of Downloads would trigger the wholesale bag wipe on
+        # the next run, deleting Repair-FolderGrouping's in-place fix along with
+        # everything else and reintroducing the bug it exists to prevent.
+        It "gates on Test-ExplorerDefaultView, not the combined grouping-aware check" {
+            $fn = $ast.FindAll({ param($n)
+                    $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                    $n.Name -eq 'Set-ExplorerDefaultView' }, $true) | Select-Object -First 1
+            $first = $fn.Body.EndBlock.Statements | Select-Object -First 1
+            $first.Extent.Text | Should -Match 'Test-ExplorerDefaultView' -Because 'the gate function'
+            $first.Extent.Text | Should -Not -Match 'Test-ExplorerViewFullyApplied' -Because (
+                'that would fold grouping drift into the wipe-everything gate')
         }
 
         It "returns early when the view is already applied" {
@@ -572,16 +703,21 @@ Describe "Explorer default folder view" -Skip:(-not $IsWindowsHost) {
 # launcher GUI, not an interpreter.
 Describe "Find-AhkExe picks the plain 64-bit interpreter" -Skip:(-not $IsWindowsHost) {
     BeforeEach {
-        $script:saved = @{ Path = $env:Path; ProgramW6432 = $env:ProgramW6432 }
+        $script:saved = @{ Path = $env:Path; ProgramW6432 = $env:ProgramW6432; LocalAppData = $env:LOCALAPPDATA }
         $script:box = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
-        # Neutralise the PATH probe so only the Program Files scan is under test.
+        # Neutralise the PATH probe and both scan roots (Program Files for a
+        # machine-scope install, LocalAppData for AutoHotkey's own per-user
+        # default - see $USER_SCOPE_PKGS) so only what a given test sets up is
+        # under test.
         $env:Path = "$env:WINDIR\System32"
         $env:ProgramW6432 = $script:box
+        $env:LOCALAPPDATA = Join-Path $script:box 'localappdata'
     }
 
     AfterEach {
         $env:Path = $script:saved.Path
         $env:ProgramW6432 = $script:saved.ProgramW6432
+        $env:LOCALAPPDATA = $script:saved.LocalAppData
     }
 
     It "skips the _UIA and UX builds and takes AutoHotkey64.exe" {
@@ -613,6 +749,17 @@ Describe "Find-AhkExe picks the plain 64-bit interpreter" -Skip:(-not $IsWindows
         Set-Content -LiteralPath (Join-Path $ux 'AutoHotkeyUX.exe') -Value '' -Encoding Ascii
 
         Find-AhkExe | Should -BeNullOrEmpty
+    }
+
+    # AutoHotkey is in $USER_SCOPE_PKGS - "winget --scope user" runs the vendor
+    # installer non-elevated, which defaults to %LocalAppData%\Programs\AutoHotkey
+    # instead of Program Files.
+    It "finds a user-scope install under LocalAppData when Program Files has none" {
+        $v2 = Join-Path $env:LOCALAPPDATA 'Programs\AutoHotkey\v2'
+        New-Item -ItemType Directory -Force -Path $v2 | Out-Null
+        Set-Content -LiteralPath (Join-Path $v2 'AutoHotkey64.exe') -Value '' -Encoding Ascii
+
+        Find-AhkExe | Should -Be (Join-Path $v2 'AutoHotkey64.exe')
     }
 }
 
@@ -1065,6 +1212,50 @@ Describe "fast mode requests no elevation (no UAC)" {
     It "no command reached by Invoke-FastPass requests elevation" {
         @($fastRunAsFuncs) | Should -BeNullOrEmpty -Because (
             "a fast run must prompt for no admin rights; elevation reachable via: $($fastRunAsFuncs -join ', ')")
+    }
+}
+
+# The work dir (Downloads\load-win) exists only to hold what Invoke-SlowPass
+# downloads into it (LUTs, the Mister Horse/Flicker Free installers, the AHK
+# script) - Invoke-FastPass never writes there. Creating it unconditionally in
+# the top-level dispatch block, ahead of Invoke-FastPass, meant a --fast-only
+# run - or a bare run where the user declined the Full prompt - left an empty
+# load-win folder behind in Downloads forever, since nothing ever deletes it.
+# AST-based (not text) so a reformat can't dodge the check.
+Describe "the work dir is only created by the pass that uses it" {
+    BeforeAll {
+        $srcPath = (Resolve-Path "$PSScriptRoot/../src/load-win.ps1").Path
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile($srcPath, [ref]$null, [ref]$null)
+
+        function Get-EnclosingFunc($node) {
+            $p = $node.Parent
+            while ($p) {
+                if ($p -is [System.Management.Automation.Language.FunctionDefinitionAst]) { return $p.Name }
+                $p = $p.Parent
+            }
+            return $null
+        }
+
+        # Every `New-Item ... $WorkDir ...` call in the script, wherever it lives.
+        $script:workDirCreates = $ast.FindAll({ param($n)
+                $n -is [System.Management.Automation.Language.CommandAst] -and
+                $n.GetCommandName() -eq 'New-Item' -and
+                ($n.CommandElements | Where-Object {
+                    $_ -is [System.Management.Automation.Language.VariableExpressionAst] -and
+                    $_.VariablePath.UserPath -eq 'WorkDir' })
+            }, $true)
+    }
+
+    It "creates `$WorkDir exactly once" {
+        @($workDirCreates).Count | Should -Be 1 -Because "one creation point keeps this easy to reason about"
+    }
+
+    It "creates it inside Invoke-SlowPass, not the top-level dispatch block" {
+        $enclosing = Get-EnclosingFunc $workDirCreates[0]
+        $enclosing | Should -Be 'Invoke-SlowPass' -Because (
+            "only the Full pass writes into it (LUTs, Mister Horse, Flicker Free, the AHK script) - " +
+            "creating it earlier (e.g. before Invoke-FastPass runs) leaves an empty load-win folder " +
+            "behind in Downloads on any --fast-only or fast-then-decline run")
     }
 }
 

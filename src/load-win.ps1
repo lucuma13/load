@@ -101,12 +101,18 @@ $AhkScript = Join-Path $WorkDir "MacKeyboard_LGG.ahk"
 # first here AutoHotkeyUX.exe      the launcher/dash GUI, not an interpreter at
 # all So match the interpreter names exactly, then prefer the 64-bit build
 # ($false sorts before $true, so "contains 64" comes first).
+#
+# AutoHotkey is in $USER_SCOPE_PKGS - installed with "winget --scope user" so
+# a standard user doesn't need admin rights - which lands in the vendor
+# installer's own non-elevated default, %LocalAppData%\Programs\AutoHotkey,
+# not Program Files. Search both so discovery works for either scope.
 function Find-AhkExe {
     $exe = Get-Command AutoHotkey.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
     if (-not $exe) {
         $exe = Get-ChildItem `
             "$(Get-ProgramFiles64)\AutoHotkey", `
-            "${env:ProgramFiles(x86)}\AutoHotkey" `
+            "${env:ProgramFiles(x86)}\AutoHotkey", `
+            "$env:LOCALAPPDATA\Programs\AutoHotkey" `
             -Recurse -Filter "AutoHotkey*.exe" -ErrorAction SilentlyContinue |
             Where-Object { $_.Name -match '^AutoHotkey(32|64)?\.exe$' } |
             Sort-Object { $_.Name -notmatch '64' } |
@@ -368,34 +374,41 @@ function Set-FileAssociation {
 # stored PER FOLDER, in shellbags, and the view a folder starts with comes from
 # a folder-type template Explorer guesses from the contents.
 #
-# The goal here is deliberately not one view everywhere: every folder should
-# sort by Name ascending and never group, EXCEPT Downloads, which should sort by
-# Date modified with the newest file first - and still not group. So the
-# per-type guessing has to keep working; only its templates get replaced:
+# The goal is deliberately not one view everywhere: every folder should sort by
+# Name ascending and never group, EXCEPT Downloads, which should sort by Date
+# modified with the newest file first - and still not group.
 #
-#   Bags\AllFolders\Shell\{type-id}    one template per folder type - what
-#                                      Folder Options' "Apply to Folders" writes
-#                                      for the type of the folder you press it
-#                                      in. Name/ascending for every type we
-#                                      might be guessed into, Date
-#                                      modified/descending for Downloads
-#                                      Bags\<n> and BagMRU the remembered
-#                                      per-folder views, which OVERRIDE the
-#                                      templates - cleared
+# Windows treats Downloads as a known folder, which ignores registry templates
+# entirely on first render.
+#
+# So the actual fix has two layers: the AllFolders\Shell\{type-id} templates
+# below still matter for every OTHER type (Documents, Pictures, ... - ordinary
+# content-guessed folders, not known folders, and their GroupView reliably DID
+# inherit from the template in the same tests), and Downloads still gets its own
+# Sort there too, on the chance a future Windows version does start reading it.
+# But the thing that actually keeps Downloads ungrouped is Repair-FolderGrouping
+# patching its bag after the fact, every run.
+#
+# Bags\<n> and BagMRU are the remembered per-folder views, which OVERRIDE the
+# templates - cleared by Set-ExplorerDefaultView when the templates themselves
+# are out of date (a genuinely rare case: first run on a profile, or this
+# script's own templates changing). Repair-FolderGrouping deliberately does NOT
+# do this wholesale clear - deleting a bag is exactly what let Windows reassert
+# its hardcoded grouped default in attempts 1 and 2 above; patching in place is
+# what makes the fix stick.
 #
 # Every path is HKCU, so this stays a fast-pass step and asks for no elevation.
 
 # AllFolders\Shell is the template tree. Its SUBKEYS are named by folder type,
 # not by view: a bag's view for a given type lives at <bag>\Shell\{type-guid},
 # and the matching AllFolders\Shell\{type-guid} is the default every folder of
-# that type inherits. That is the whole lever this section pulls - it is what
-# lets Downloads get a different sort from everything else without touching a
-# single per-folder bag.
+# that type inherits - for ordinary, content-guessed folder types. Known
+# folders like Downloads do not reliably consult it.
 $ExplorerAllFoldersKey = "HKCU:\Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\Bags\AllFolders\Shell"
 $ExplorerFolderTypeKey = "HKCU:\Software\Microsoft\Windows\Shell\Bags\AllFolders\Shell"
 
 # The per-folder view memory, in both trees Explorer keeps it in. Recursively
-# deleted, so these must stay HKCU-only.
+# deleted by Set-ExplorerDefaultView, so these must stay HKCU-only.
 $ExplorerBagPaths = @(
     "HKCU:\Software\Microsoft\Windows\Shell\BagMRU"
     "HKCU:\Software\Microsoft\Windows\Shell\Bags"
@@ -403,10 +416,15 @@ $ExplorerBagPaths = @(
     "HKCU:\Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\Bags"
 )
 
+# Roots Repair-FolderGrouping and Test-NoFolderGrouping walk for EXISTING
+# per-folder bags - the two "Bags" trees from $ExplorerBagPaths, not BagMRU
+# (which holds the ItemIDList index, not view data).
+$ExplorerBagRoots = @(
+    "HKCU:\Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\Bags",
+    "HKCU:\Software\Microsoft\Windows\Shell\Bags"
+)
+
 # Folder type ids, from HKLM\...\Explorer\FolderTypes\{guid}\CanonicalName.
-# Explorer guesses a type per folder from its contents; Downloads is the one
-# that matters, because its built-in template is what supplies the Date modified
-# sort and the "Today / Yesterday / Last week" headers.
 $FOLDERTYPE_GENERIC = "{5C4F28B5-F869-4E84-8E60-F11DB97C5CC7}"
 $FOLDERTYPE_DOCUMENTS = "{7D49D726-3C21-4F05-99AA-FDC2C9474656}"
 $FOLDERTYPE_PICTURES = "{B3690E58-E961-423B-B687-386EBFD83239}"
@@ -446,14 +464,10 @@ $SORT_BY_DATE_MODIFIED_DESC = [byte[]] @(
 )
 
 # The template to write per folder type. Everything Explorer might guess a
-# folder into gets Name/ascending, so the sort does not change under you as a
-# folder's contents change type; Downloads alone gets Date modified/descending.
+# folder into gets Name/ascending; Downloads gets Date modified/descending too
+# - it just cannot be trusted, alone, to keep Downloads ungrouped (see the
+# section header comment; Repair-FolderGrouping is what actually does that).
 # Ordered so the checklist and any failure message name Generic first.
-#
-# Covering the guessable types individually is what replaces the old
-# FolderType=NotSpecified blanket. It reaches the same "one view everywhere"
-# result while leaving the type intact for the one folder whose type we want to
-# keep.
 $ExplorerViewTemplates = [ordered] @{
     $FOLDERTYPE_GENERIC   = $SORT_BY_NAME_ASC
     $FOLDERTYPE_DOCUMENTS = $SORT_BY_NAME_ASC
@@ -463,11 +477,74 @@ $ExplorerViewTemplates = [ordered] @{
     $FOLDERTYPE_DOWNLOADS = $SORT_BY_DATE_MODIFIED_DESC
 }
 
+# Get-FolderBagTypeKey <bagRoots> - the registry path of every EXISTING
+# per-folder bag's Shell\{type} key (not the AllFolders template - an actual
+# folder Explorer has already rendered a view for). Shared by
+# Test-NoFolderGrouping (read) and Repair-FolderGrouping (write) so the two
+# can't drift apart on which bags count.
+function Get-FolderBagTypeKey {
+    param($bagRoots = $ExplorerBagRoots)
+    foreach ($root in $bagRoots) {
+        if (-not (Test-Path $root)) { continue }
+        $bagNames = Get-ChildItem -LiteralPath $root -ErrorAction SilentlyContinue |
+            Where-Object { $_.PSChildName -ne 'AllFolders' } |
+            Select-Object -ExpandProperty PSChildName
+        foreach ($bagName in $bagNames) {
+            $shellKey = Join-Path $root "$bagName\Shell"
+            if (-not (Test-Path -LiteralPath $shellKey)) { continue }
+            Get-ChildItem -LiteralPath $shellKey -ErrorAction SilentlyContinue |
+                ForEach-Object { Join-Path $shellKey $_.PSChildName }
+        }
+    }
+}
+
+# Test-NoFolderGrouping - true when no EXISTING per-folder bag has grouping
+# switched on, for any folder type. Read-only counterpart to
+# Repair-FolderGrouping.
+function Test-NoFolderGrouping {
+    param($bagRoots = $ExplorerBagRoots)
+    foreach ($k in (Get-FolderBagTypeKey $bagRoots)) {
+        if ((Get-RegValue $k 'GroupView') -ne 0) { return $false }
+    }
+    return $true
+}
+
+# Repair-FolderGrouping - turn grouping off on every EXISTING per-folder bag
+# that currently has it on, IN PLACE. Returns $true if it changed anything.
+#
+# Deliberately does not delete and let Explorer recreate these bags the way
+# Set-ExplorerDefaultView does for a template mismatch: for Downloads
+# specifically, deleting the bag is what let Windows reapply its hardcoded
+# grouped default in the first place (see the section header comment) - a
+# patched-in-place bag survived a real open-and-close cycle in the same test
+# where a freshly recreated one did not. So this is the actual fix for
+# Downloads drifting back to grouped, run every fast pass regardless of
+# whether Set-ExplorerDefaultView's templates need anything.
+#
+# No Explorer restart needed - confirmed live: the patch took effect on the
+# next real open without bouncing the shell, because it edits the bag Explorer
+# will read next time rather than one it is currently holding open in memory.
+function Repair-FolderGrouping {
+    param($bagRoots = $ExplorerBagRoots)
+    $changed = $false
+    foreach ($k in (Get-FolderBagTypeKey $bagRoots)) {
+        if ((Get-RegValue $k 'GroupView') -ne 0) {
+            Set-ItemProperty -LiteralPath $k -Name "GroupView" -Value 0 -Type DWord
+            Set-ItemProperty -LiteralPath $k -Name "GroupByKey:FMTID" -Value "{00000000-0000-0000-0000-000000000000}" -Type String
+            Set-ItemProperty -LiteralPath $k -Name "GroupByKey:PID" -Value 0 -Type DWord
+            Set-ItemProperty -LiteralPath $k -Name "GroupByDirection" -Value 1 -Type DWord
+            $changed = $true
+        }
+    }
+    return $changed
+}
+
 # Test-ExplorerDefaultView - true once every folder-type template is ours:
 # ungrouped everywhere, sorted by Name ascending, except Downloads which sorts
-# by Date modified descending. Drives both the checklist and
-# Set-ExplorerDefaultView's early return, so a second run neither clears the
-# shellbags nor restarts the shell again.
+# by Date modified descending. Drives Set-ExplorerDefaultView's early return, so
+# a second run neither clears the shellbags nor restarts the shell again unless
+# the templates themselves actually need it. Deliberately does NOT check
+# Test-NoFolderGrouping.
 #
 # The Sort blob is compared as a joined string on purpose. `-eq` between two
 # byte arrays is an element-wise FILTER in PowerShell, not an equality test: it
@@ -483,16 +560,41 @@ function Test-ExplorerDefaultView {
         if (($ExplorerViewTemplates[$type] -join ',') -ne ((Get-RegValue $k 'Sort') -join ',')) { return $false }
         if ((Get-RegValue $k 'GroupView') -ne 0) { return $false }
     }
-    # A leftover NotSpecified from an earlier version of this script would pin
-    # every folder to Generic and starve the Downloads template, so its absence
-    # is part of the applied state rather than a separate cleanup step.
+    # A leftover NotSpecified from an even earlier version of this script would
+    # pin every folder to Generic - so its absence is part of the applied state.
     return $null -eq (Get-RegValue $typeKey 'FolderType')
+}
+
+# Test-ExplorerViewFullyApplied - Test-ExplorerDefaultView (the templates) AND
+# Test-NoFolderGrouping (no per-folder bag has actually drifted back to grouped)
+# together. This, not Test-ExplorerDefaultView alone, is the checklist's "is
+# everything really as intended" answer.
+#
+# Kept OUT of Test-ExplorerDefaultView on purpose: that function gates
+# Set-ExplorerDefaultView's wholesale bag wipe, and wiping is exactly what
+# reintroduces Downloads' grouped default - folding grouping drift into that
+# same gate would make a plain re-open of Downloads trigger a full
+# reset-and-restart on the next run, undoing Repair-FolderGrouping's whole
+# point. All three params are injectable so the comparison can be unit-tested
+# against probe keys, the way Get-UserFolder takes its $key.
+function Test-ExplorerViewFullyApplied {
+    param($baseKey = $ExplorerAllFoldersKey, $typeKey = $ExplorerFolderTypeKey, $bagRoots = $null)
+    if (-not (Test-ExplorerDefaultView $baseKey $typeKey)) { return $false }
+    if ($null -ne $bagRoots) { return Test-NoFolderGrouping $bagRoots }
+    return Test-NoFolderGrouping
 }
 
 # Set-ExplorerDefaultView - make "Group by: (None)" plus "Sort by: Name,
 # ascending" the view every folder opens with, and "Sort by: Date modified,
 # descending" the view Downloads opens with. Returns $true when it changed
 # something, so the caller knows whether the shell has to be restarted.
+#
+# Only handles the templates being wrong (rare: first run on a profile, or
+# this script's own templates changing) - it does NOT handle Downloads
+# drifting back to grouped on an otherwise-correct profile. That is
+# Repair-FolderGrouping's job, called separately, every run, and specifically
+# NOT by wiping bags the way this function does (see the section header
+# comment for why that reintroduces the bug for Downloads).
 function Set-ExplorerDefaultView {
     if (Test-ExplorerDefaultView) { return $false }
 
@@ -513,9 +615,7 @@ function Set-ExplorerDefaultView {
         # GroupView 0 alongside a null GroupByKey is what Explorer itself writes
         # for an ungrouped folder. Zeroing GroupView on its own is not enough -
         # the leftover GroupByKey names a column to group by and the headers
-        # come back the next time the view is touched. Downloads is the folder
-        # this actually rescues: its built-in template groups by Date modified,
-        # which is where the "Today / Yesterday / Last week" headers come from.
+        # come back the next time the view is touched.
         Set-ItemProperty -LiteralPath $k -Name "GroupView" -Value 0 -Type DWord
         Set-ItemProperty -LiteralPath $k -Name "GroupByKey:FMTID" -Value "{00000000-0000-0000-0000-000000000000}" -Type String
         Set-ItemProperty -LiteralPath $k -Name "GroupByKey:PID" -Value 0 -Type DWord
@@ -523,9 +623,9 @@ function Set-ExplorerDefaultView {
     }
 
     # Undo the blanket folder-type override an earlier version of this script
-    # wrote. Left in place it would type every folder as Generic, and Downloads
-    # would inherit Name/ascending along with everything else instead of
-    # reaching its own template.
+    # wrote (and that a later attempt at this bug re-added, then reverted again
+    # - see the section header comment). Left in place it would type every
+    # folder as Generic, and Downloads would lose its own template entirely.
     Remove-ItemProperty -LiteralPath $ExplorerFolderTypeKey -Name "FolderType" -Force -ErrorAction SilentlyContinue
 
     return $true
@@ -581,6 +681,39 @@ $PREMIERE_PKGS = @(
     "lucuma13.prem-down"
 )
 
+# Packages with a genuine per-user winget scope - AutoHotkey and ExifTool
+# declare an explicit user-scope installer; MediaInfo/FFmpeg/Caffeine are
+# portable zips with no declared scope, which winget installs per-user with no
+# elevation. These skip the elevated machine-wide batch entirely (see
+# Invoke-ElevatedInstall) and install as this user instead (see
+# Invoke-SlowPass).
+$USER_SCOPE_PKGS = @(
+    "MediaArea.MediaInfo",
+    "OliverBetz.ExifTool",
+    "ZhornSoftware.Caffeine",
+    "Gyan.FFmpeg",
+    "AutoHotkey.AutoHotkey"
+)
+
+# Packages whose ONLY non-admin winget option is a portable zip - a worse
+# install than $USER_SCOPE_PKGS (no Start Menu shortcut/uninstall entry, and
+# for VLC specifically, Set-DefaultApp can't register a portable build as a
+# default). So these stay queued in the elevated machine-wide batch on every
+# run, and only fall back to a per-user portable install when elevation isn't
+# available (see Invoke-SlowPass).
+$PORTABLE_FALLBACK_PKGS = @("VideoLAN.VLC", "Audacity.Audacity")
+
+# The real (Program Files) install path for each $PORTABLE_FALLBACK_PKGS
+# entry - used to tell "installed as the real thing" apart from "installed
+# portable". winget's own DB (Test-WingetInstalled) can't tell scopes apart,
+# so without this a portable fallback would read as "done" forever and the
+# machine-wide install would never be retried once admin becomes available.
+# Shared with $DEFAULT_APPS below so VLC's path isn't duplicated.
+$MACHINE_EXE_PATH = @{
+    "VideoLAN.VLC"      = "$(Get-ProgramFiles64)\VideoLAN\VLC\vlc.exe"
+    "Audacity.Audacity" = "$(Get-ProgramFiles64)\Audacity\Audacity.exe"
+}
+
 # Friendly display names for the winget ids (uv tools are already friendly).
 $PKG_ALIAS = @{
     "astral-sh.uv"                = "uv"
@@ -609,7 +742,7 @@ function Get-PkgAlias($id) { if ($PKG_ALIAS.ContainsKey($id)) { $PKG_ALIAS[$id] 
 $DEFAULT_APPS = @(
     @{
         WingetId = "VideoLAN.VLC"
-        Exe      = "$(Get-ProgramFiles64)\VideoLAN\VLC\vlc.exe"
+        Exe      = $MACHINE_EXE_PATH["VideoLAN.VLC"]
         ProgId   = "VLC.{ext}"
         Exts     = @('mp4', 'm4v', 'mov', 'mkv', 'avi', 'wmv', 'flv', 'webm', 'mpg', 'mpeg', 'm2ts', 'mts', 'ts', 'vob', 'mxf')
     }
@@ -750,6 +883,17 @@ function Test-WingetInstalled($id) {
     return $LASTEXITCODE -eq 0 -and ($result -match [regex]::Escape($id))
 }
 
+# Test-PkgReallyInstalled <id> - like Test-WingetInstalled, but for
+# $PORTABLE_FALLBACK_PKGS checks whether the REAL (Program Files) install is
+# present, not just any scope. winget list reports a package "installed" the
+# moment either scope's copy lands, which would otherwise make the checklist
+# call a portable fallback "done" forever, and make the elevated batch "upgrade"
+# that portable copy in place instead of ever installing the real one.
+function Test-PkgReallyInstalled($id) {
+    if ($MACHINE_EXE_PATH.ContainsKey($id)) { return Test-Path $MACHINE_EXE_PATH[$id] }
+    return Test-WingetInstalled $id
+}
+
 # Invoke-WingetApply <id> [scope] - install the package, or upgrade it in place
 # when already present. <scope> ("user"/"machine") is passed only on a fresh
 # install; an upgrade keeps the existing install's scope. Used for the
@@ -861,7 +1005,7 @@ function Show-Checklist {
     $kbOk = ($kbSpeed -eq "31") -and ($kbDelay -eq "0")
     $toggle = "HKCU:\Keyboard Layout\Toggle"
     $togglesOk = ((Get-RegValue $toggle 'Hotkey') -eq "3") -and ((Get-RegValue $toggle 'Language Hotkey') -eq "3") -and ((Get-RegValue $toggle 'Layout Hotkey') -eq "3")
-    $sysOk = $kbOk -and $togglesOk -and (Test-ExplorerDefaultView)
+    $sysOk = $kbOk -and $togglesOk -and (Test-ExplorerViewFullyApplied)
     $premiereRunning = $PREMIERE_OK -and ($null -ne (Get-Process -Name "Adobe Premiere Pro*" -ErrorAction SilentlyContinue))
     $ahkActive = Test-Path $AhkScript
     $ahkInstalled = [bool](Find-AhkExe)
@@ -915,8 +1059,8 @@ function Show-Checklist {
     # Install or update apps - winget packages, non-winget programs (Premiere Pro plugins) and uv tools
     # (each entry paired with its "already installed?" check). Installation is slow, so it runs last.
     $apps = @()
-    foreach ($pkg in $CORE_PKGS) { $apps += @{ name = (Get-PkgAlias $pkg); ok = (Test-WingetInstalled $pkg) } }
-    if ($FULL) { foreach ($pkg in $FULL_PKGS) { $apps += @{ name = (Get-PkgAlias $pkg); ok = (Test-WingetInstalled $pkg) } } }
+    foreach ($pkg in $CORE_PKGS) { $apps += @{ name = (Get-PkgAlias $pkg); ok = (Test-PkgReallyInstalled $pkg) } }
+    if ($FULL) { foreach ($pkg in $FULL_PKGS) { $apps += @{ name = (Get-PkgAlias $pkg); ok = (Test-PkgReallyInstalled $pkg) } } }
     if ($PREMIERE_OK) {
         $apps += @{ name = "Mister Horse"; ok = (Test-MisterHorseInstalled) }
         $apps += @{ name = "Flicker Free"; ok = (Test-FlickerFreeInstalled) }
@@ -1152,6 +1296,15 @@ public class Win32Shell {
         Write-Host "         Restarting Explorer to apply it - any open Explorer windows will close."
         Restart-Explorer
     }
+
+    # Downloads drifting back to grouped is not a template problem (see the
+    # section header comment above Set-ExplorerDefaultView) - it happens on an
+    # otherwise perfectly-applied profile, every time Downloads is opened fresh,
+    # so this runs unconditionally rather than folded into the check above.
+    # Registry-only and does not need an Explorer restart (confirmed live).
+    if (Repair-FolderGrouping) {
+        Write-Host "  [note] A folder (Downloads, most likely) had drifted back to grouped - fixed."
+    }
 }
 
 # Update-SessionPath - pull the freshly-installed tools' PATH entries into this
@@ -1176,12 +1329,18 @@ function Update-SessionPath {
 # once. The install/upgrade decisions and the plugin downloads happen here
 # (non-elevated); only the installers run elevated. winget runs with --scope
 # machine so packages install system-wide and are available to the standard
-# user; uv is excluded (it must stay per-user - see Invoke-SlowPass). Does
-# nothing, and prompts for nothing, when there's nothing left to install.
+# user; uv and $USER_SCOPE_PKGS are excluded (they must stay per-user - see
+# Invoke-SlowPass). Does nothing, and prompts for nothing, when there's nothing
+# left to install.
 #
 # The batch is handed to an elevated cmd.exe via its command line: AppLocker's
 # script-file rules and AV script heuristics don't apply, and cmd works under
 # CLM too.
+#
+# Returns $true when nothing needed elevation, or the elevated batch actually
+# ran; $false when a prompt was needed but declined, cancelled, or the user has
+# no admin rights at all. Invoke-SlowPass uses that to fall back to a portable,
+# per-user install for $PORTABLE_FALLBACK_PKGS.
 function Invoke-ElevatedInstall {
     $cmds = @()
     $wantMisterHorse = $false
@@ -1225,16 +1384,21 @@ function Invoke-ElevatedInstall {
         }
     }
 
-    # winget: everything except uv, installed machine-wide. An upgrade keeps the
-    # existing install's scope, so --scope is only set on a fresh install.
-    # winget waits for its own installer, so no "start /wait" wrapper is needed
-    # here.
+    # winget: everything except uv and $USER_SCOPE_PKGS (both installed
+    # per-user, no elevation needed - see Invoke-SlowPass), installed
+    # machine-wide. An upgrade keeps the existing install's scope, so --scope is
+    # only set on a fresh install. Test-PkgReallyInstalled decides
+    # install-vs-upgrade: for $PORTABLE_FALLBACK_PKGS winget's own DB can't tell
+    # scopes apart, so once the per-user fallback in Invoke-SlowPass has
+    # installed one of them, plain Test-WingetInstalled would call it
+    # "installed" forever and "upgrade" would just refresh the portable copy in
+    # place - never installing the real one even once admin is available.
     if ($WINGET_OK) {
-        $ids = @($CORE_PKGS | Where-Object { $_ -ne $UV_PKG })
-        if ($FULL) { $ids += $FULL_PKGS }
+        $ids = @($CORE_PKGS | Where-Object { $_ -ne $UV_PKG -and $USER_SCOPE_PKGS -notcontains $_ })
+        if ($FULL) { $ids += ($FULL_PKGS | Where-Object { $USER_SCOPE_PKGS -notcontains $_ }) }
         if ($PREMIERE_OK) { $ids += $PREMIERE_PKGS }
         foreach ($id in $ids) {
-            if (Test-WingetInstalled $id) {
+            if (Test-PkgReallyInstalled $id) {
                 $cmds += "winget upgrade --id $id --exact --silent --accept-package-agreements --accept-source-agreements"
             }
             else {
@@ -1243,7 +1407,7 @@ function Invoke-ElevatedInstall {
         }
     }
 
-    if ($cmds.Count -eq 0) { return }  # nothing needs admin - no prompt
+    if ($cmds.Count -eq 0) { return $true }  # nothing needs admin - no prompt, nothing failed either
 
     # Join with " & " (run each regardless of the previous one's exit code) and
     # hand it to one elevated cmd.exe. "/s /c" strips just the outermost quotes,
@@ -1251,10 +1415,12 @@ function Invoke-ElevatedInstall {
     # config that follows sees the installs finished; the elevated console shows
     # install progress.
     $chain = "/s /c `"" + ($cmds -join " & ") + "`""
+    $elevated = $true
     try {
         Start-Process cmd.exe -ArgumentList $chain -Verb RunAs -Wait
     }
     catch {
+        $elevated = $false
         Write-Host "  [warn] Elevated install step did not run (admin prompt cancelled?): $_"
     }
 
@@ -1274,19 +1440,45 @@ function Invoke-ElevatedInstall {
         }
         else { Write-Host "  [warn] Flicker Free did not install - re-run with --full, or run the installer in $ffDir yourself" }
     }
+
+    return $elevated
 }
 
 function Invoke-SlowPass {
+    # Created here: this is the only pass that ever writes into it, so a
+    # --fast-only or fast-then-decline run never creates it.
+    New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
+
     # All installs that need admin rights (machine-wide winget packages + the
     # Premiere plugins) run in ONE elevated batch. Everything below stays in
     # this non-elevated process so it lands in the real user's profile.
-    Invoke-ElevatedInstall
+    $elevated = Invoke-ElevatedInstall
 
-    # uv - installed per-user (no elevation, --scope user) so `uv tool install`
-    # lands in THIS user's home, not the admin's. Invoked by full path (see
-    # Find-UvExe) so it's found even when the session PATH didn't pick up
-    # winget's change (common under CLM).
-    if ($WINGET_OK) { Invoke-WingetApply $UV_PKG "user" }
+    # uv and $USER_SCOPE_PKGS - installed per-user (no elevation, --scope
+    # user) so they land in THIS user's home, not the admin's. Invoked by full
+    # path where the script needs to run the result directly (see
+    # Find-UvExe/Find-AhkExe) so it's found even when the session PATH didn't
+    # pick up winget's change (common under CLM).
+    if ($WINGET_OK) {
+        Invoke-WingetApply $UV_PKG "user"
+        foreach ($id in $USER_SCOPE_PKGS) { Invoke-WingetApply $id "user" }
+    }
+
+    # $PORTABLE_FALLBACK_PKGS (VLC, Audacity) only get a per-user portable
+    # install when the elevated batch above genuinely didn't run - a real
+    # admin install is strictly better (Start Menu shortcut/uninstall entry,
+    # and VLC's default-app step below needs it) and stays queued in
+    # Invoke-ElevatedInstall on every future run via Test-PkgReallyInstalled,
+    # so this fallback only fires while no admin is available.
+    if (-not $elevated -and $WINGET_OK) {
+        foreach ($id in $PORTABLE_FALLBACK_PKGS) {
+            if (-not (Test-PkgReallyInstalled $id)) {
+                Write-Host "  [info] No admin rights - installing $(Get-PkgAlias $id) as a portable, per-user fallback. Re-run with admin available to get the full install."
+                Invoke-WingetApply $id "user"
+            }
+        }
+    }
+
     Update-SessionPath
     $uv = Find-UvExe
     if ($uv) {
@@ -1352,23 +1544,24 @@ try {
     # Nothing above this point writes to disk, so the preview stays a pure read.
     if ($DRY_RUN) { Show-Checklist; exit 0 }
 
-    # From here on we apply changes, so the work dir has to exist.
-    New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
-
-    # Fast pass runs for every mode (--fast, --full, and the bare command).
+    # Fast pass runs for every mode (--fast, --full, and the bare command). It
+    # never touches $WorkDir - see Invoke-SlowPass for why creating it is
+    # deferred to there.
     Invoke-FastPass
 
     # The bare command pauses between the quick config and the heavy installs.
-    # Enter (or y) continues to the Full pass; n stops here with just the fast
-    # setup applied.
+    # A single keypress: y/Y continues without Enter, and Enter alone continues
+    # too. Any other key is ignored and the loop keeps waiting - there is no
+    # way to decline into fast-only from here..
     if ($AUTO) {
-        $ans = Read-Host "  Fast loading is complete. Continue to FULL mode (downloads + installs)? [Y/n]"
-        if ($ans -match '^\s*n') {
-            Write-Host "  Stopped after fast setup - re-run with --full to install."
+        Write-Host ""
+        Write-Host "  Fast loading is complete. Press (y) or Enter to continue on FULL mode " -NoNewline
+        while ($true) {
+            $key = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+            if ($key.VirtualKeyCode -eq 13 -or $key.Character -eq 'y' -or $key.Character -eq 'Y') { break }
         }
-        else {
-            $FULL = $true
-        }
+        Write-Host ""
+        $FULL = $true
     }
     if ($FULL) { Invoke-SlowPass }
 
