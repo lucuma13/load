@@ -81,9 +81,22 @@ run_machine_via_admin() {
 }
 
 would_run() { echo "  🚀  $1"; }
-would_skip() { echo "  ⏭️  $1"; }
-already_done() { echo "  ✅  $1"; }
+would_skip() { echo "  ⏩  $1"; }
 checking() { echo "  Checking $1..."; }
+
+# already_done <line> — an item that needs no work.
+#
+# checklist() is printed twice over a machine's life: as the --dry-run preview and
+# as the post-install summary. The same fact reads differently in each — before
+# the run it is one more thing that would be skipped, after it, one more thing
+# that is done — so the glyph follows the mode while the text stays put.
+already_done() {
+  if ${DRY_RUN:-false}; then
+    echo "  ⏩  $1"
+  else
+    echo "  ✅  $1"
+  fi
+}
 
 # quiet_run <cmd…> — run a command fully silent on success: buffer its combined
 # output and echo it only if the command fails, then propagate the failure (so
@@ -610,8 +623,8 @@ checklist() {
     would_run "$premiere_line"
   fi
 
-  # Audacity — spectrogram track view and its frequency range.
-  local audacity_line="Audacity (track view, frequency range)"
+  # Audacity — preferences (spectrogram track view).
+  local audacity_line="Audacity (preferences)"
   if ! $AUDACITY_OK; then
     would_skip "$audacity_line — not installed"
   elif $AUDACITY_RUNNING; then
@@ -1192,7 +1205,11 @@ APPLESCRIPT
 main() {
   # --dry-run just prints the checklist, then stops.
   if $DRY_RUN; then
+    echo ""
+    echo "  🔍  Dry run — nothing will be changed."
     checklist
+    echo "  🔍  Nothing was changed. Re-run without --dry-run to do the above."
+    echo ""
     exit 0
   fi
 

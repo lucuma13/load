@@ -1,18 +1,18 @@
 #!/bin/bash
 # Mac workstation cleanup script Copyright (c) 2026 Luis Gómez Gutiérrez
 #
-# Usage: bash <(curl -fsSL
-# https://raw.githubusercontent.com/lucuma13/load/main/src/unload-mac.sh)
-#
 # It removes custom setup — load-mac's work directory, our Premiere Pro
 # workspace templates, the Mister Horse Product Manager sign-in, Claude Code and
 # the shell history. And it quits Google Chrome.
 #
-# Usage: --dry-run is the only option, and the way to see the exact list of
-# paths first:
+# Usage — --dry-run is the only option, and reports the very same run instead of
+# performing it, a line per phase either way:
 #
-#   bash <(curl -fsSL …) --dry-run     # print what would be removed, remove
-#   nothing bash <(curl -fsSL …)               # remove it
+#   # preview it, change nothing
+#   bash <(curl -fsSL https://raw.githubusercontent.com/lucuma13/load/main/src/unload-mac.sh) --dry-run
+#
+#   # do it
+#   bash <(curl -fsSL https://raw.githubusercontent.com/lucuma13/load/main/src/unload-mac.sh)
 #
 # Process substitution is the recommended form — flags pass straight through. As
 # in load-mac.sh the work is wrapped in main() and invoked on the last line, so
@@ -57,11 +57,26 @@ usage() {
   echo "" >&2
 }
 
-section() { echo "  $1"; }
+# Output is exactly one line per phase.
 removing() { echo "  🧹  $1"; }
-kept() { echo "  ✅  $1"; }
-nothing_to_do() { echo "  ✅  Nothing to remove"; }
+would() { echo "  🚀  $1"; }
+skipped() { echo "  ⏩  $1"; }
 note() { echo "  ℹ️  $1"; }
+
+# did_it <verb-past> <verb-plain> <object…> — the result line of a phase that had
+# something to do.
+#
+# Split into its verb so a dry run can say the same sentence in the conditional:
+# "Removed shell history" becomes "Would remove shell history".
+did_it() {
+  local past="$1" plain="$2"
+  shift 2
+  if ${DRY_RUN:-false}; then
+    would "Would $plain $*"
+  else
+    removing "$past $*"
+  fi
+}
 
 # tilde <path> — Shorten a path under $HOME to ~/… for display. Presentation only.
 tilde() {
@@ -85,8 +100,10 @@ under_home() {
 }
 
 # rm_path <path> — remove a file, directory tree or symlink, honouring --dry-run.
-# Prints exactly one line whether it deletes or only previews, so a dry run's
-# output is precisely what a real run would do.
+#
+# Silent: the caller reports the phase in one line. What it returns is the part
+# callers use — whether there was anything there at all — which is what lets a
+# phase tell "cleaned" from "already clean", on a dry run as on a real one.
 rm_path() {
   local p="${1:-}"
   [ -e "$p" ] || [ -L "$p" ] || return 1
@@ -95,10 +112,9 @@ rm_path() {
     return 1
   }
   if ${DRY_RUN:-false}; then
-    removing "Would remove $(tilde "$p")"
     return 0
   fi
-  rm -rf "$p" && removing "Removed $(tilde "$p")"
+  rm -rf "$p"
 }
 
 # claude_casks_installed — echo the claude-code casks present on this machine.
@@ -260,20 +276,22 @@ CLAUDE_KEYCHAIN_SERVICE="Claude Code-credentials"
 # -----------------------------------------------------------------------------
 
 clean_workdir() {
-  section "Work directory ($(tilde "$WORKDIR"))"
-  rm_path "$WORKDIR" || nothing_to_do
+  if rm_path "$WORKDIR"; then
+    did_it Removed remove "work directory ($(tilde "$WORKDIR"))"
+  else
+    skipped "Work directory - nothing to remove"
+  fi
 }
 
 # clean_premiere_workspaces — remove our workspace files from every Premiere
 # profile's Layouts folder.
 clean_premiere_workspaces() {
-  section "Premiere Pro workspaces"
   local did=false dirs names dir name
   dirs="$(premiere_layout_dirs)"
   # No Premiere profile means nothing to remove - and no reason to go to the
   # network for the list.
   if [ -z "$dirs" ]; then
-    nothing_to_do
+    skipped "Premiere Pro workspaces - nothing to remove"
     return 0
   fi
   # `|| true` because set -o pipefail makes both halves fatal otherwise: a failed
@@ -288,10 +306,19 @@ clean_premiere_workspaces() {
       rm_path "$dir/$name" && did=true
     done <<<"$names"
   done <<<"$dirs"
-  $did || nothing_to_do
+  if $did; then
+    did_it Removed remove "Premiere Pro workspaces"
+  else
+    skipped "Premiere Pro workspaces - nothing to remove"
+  fi
 }
 
-# quit_chrome — ask Google Chrome to quit, and return 1 when it wasn't running.
+# quit_chrome — ask Google Chrome to quit. Silent; the outcome comes back in the
+# return code for clean_chrome to report:
+#
+#   0  it quit when asked
+#   1  it wasn't running
+#   2  it had to be forced
 #
 # Asked, not killed: `kill -9` costs the session — Chrome comes back with the
 # "didn't shut down correctly" restore bar and a half-written profile — whereas
@@ -299,12 +326,8 @@ clean_premiere_workspaces() {
 # the open tabs for next launch.
 quit_chrome() {
   local waited=0 left
-  # No process count in the messages below, unlike the Mister Horse phase: Chrome
-  # runs a helper per tab, so a couple of windows is twenty-odd processes and a
-  # number there would read as twenty-odd windows about to close.
   [ -n "$(chrome_pids)" ] || return 1
   if $DRY_RUN; then
-    removing "Would quit Google Chrome"
     return 0
   fi
   osascript -e 'tell application "Google Chrome" to quit' &>/dev/null || true
@@ -314,46 +337,54 @@ quit_chrome() {
     sleep 1
     waited=$((waited + 1))
   done
-  if [ -n "$left" ]; then
+  [ -z "$left" ] || {
     echo "$left" | xargs kill -9 2>/dev/null || true
-    removing "Quit Google Chrome — it did not close on its own, so it was forced"
-  else
-    removing "Quit Google Chrome"
-  fi
+    return 2
+  }
 }
 
 # clean_chrome — quit Google Chrome.
+#
+# No process count in the lines below: Chrome runs a helper per tab, so a couple
+# of windows is twenty-odd processes and a number there would read as twenty-odd
+# windows about to close.
 clean_chrome() {
-  section "Google Chrome"
-  quit_chrome || kept "Not running"
+  local rc=0
+  quit_chrome || rc=$?
+  case "$rc" in
+  0) did_it Quit quit "Google Chrome" ;;
+  2) removing "Quit Google Chrome — it did not close on its own, so it was forced" ;;
+  *) skipped "Google Chrome - not running" ;;
+  esac
 }
 
 # quit_misterhorse — quit the Product Manager so the sign-out below sticks, and
 # return 1 when nothing was running.
 quit_misterhorse() {
-  local pids n
+  local pids
   pids="$(misterhorse_pids)"
   [ -n "$pids" ] || return 1
-  n="$(echo "$pids" | wc -l | tr -d ' ')"
   if $DRY_RUN; then
-    removing "Would quit $n running Mister Horse process(es)"
     return 0
   fi
   echo "$pids" | xargs kill -9 2>/dev/null || true
-  removing "Quit $n running Mister Horse process(es)"
 }
 
 # clean_misterhorse — sign this account out of Mister Horse, leaving the plugins
 # installed. See misterhorse_state_paths for why removing that state is the
 # sign-out.
 clean_misterhorse() {
-  section "Mister Horse (Product Manager)"
   local did=false path
   quit_misterhorse && did=true
   while IFS= read -r path; do
     rm_path "$path" && did=true
   done <<<"$(misterhorse_state_paths)"
-  $did || nothing_to_do
+  if $did; then
+    did_it "Signed out of" "sign out of" "Mister Horse Product Manager"
+  else
+    skipped "Mister Horse Product Manager - not signed in"
+    return 0
+  fi
 
   # A panel open inside a running Premiere or After Effects has the same session
   # in memory and writes its own copy back when the host quits, so a sign-out
@@ -378,41 +409,45 @@ claude_signout() {
     return 1
   fi
   if $DRY_RUN; then
-    removing "Would sign out of Claude Code (keychain item '$CLAUDE_KEYCHAIN_SERVICE')"
     return 0
   fi
   while [ "$n" -lt 5 ] && security delete-generic-password -s "$CLAUDE_KEYCHAIN_SERVICE" &>/dev/null; do
     n=$((n + 1))
   done
-  removing "Signed out of Claude Code (removed keychain item '$CLAUDE_KEYCHAIN_SERVICE')"
+  # The loop ends on a failing condition, so say so explicitly.
+  return 0
 }
 
 clean_claude() {
-  section "Claude Code"
-  local did=false cask path
+  local did=false casks cask path
 
   claude_signout && did=true
 
   # Uninstall before wiping state: brew's own uninstall may want to read the
-  # cask's metadata.
+  # cask's metadata. The cask names stay out of the result line (e.g.
+  # claude-code, claude-code@latest) and they appear only in the failure below,
+  # which is there to be acted on.
   if $BREW_OK; then
-    for cask in $(claude_casks_installed); do
-      did=true
-      if $DRY_RUN; then
-        removing "Would uninstall Homebrew cask '$cask'"
-      elif brew uninstall --cask --force "$cask" &>/dev/null; then
-        removing "Uninstalled Homebrew cask '$cask'"
-      else
-        echo "  ⚠️  'brew uninstall --cask $cask' failed — remove it by hand"
-      fi
-    done
+    casks="$(claude_casks_installed)"
+    [ -z "$casks" ] || did=true
+    if ! $DRY_RUN; then
+      for cask in $casks; do
+        brew uninstall --cask --force "$cask" &>/dev/null ||
+          echo "  ⚠️  'brew uninstall --cask $cask' failed — remove it by hand"
+      done
+    fi
   fi
 
   while IFS= read -r path; do
     rm_path "$path" && did=true
   done <<<"$(claude_state_paths)"
 
-  $did || nothing_to_do
+  if $did; then
+    did_it Uninstalled uninstall "Claude Code"
+  else
+    skipped "Claude Code - nothing to uninstall"
+    return 0
+  fi
 
   # A `claude` still on PATH after all that was installed some other way — the
   # native installer (~/.local/bin) or a global npm package — which this script
@@ -425,19 +460,16 @@ clean_claude() {
 }
 
 clean_history() {
-  section "Shell history"
   local did=false path
   while IFS= read -r path; do
     rm_path "$path" && did=true
   done <<<"$(history_paths)"
 
-  $did || nothing_to_do
-
-  # The shell you launched this from holds its own commands in memory and appends
-  # them to a fresh history file when it exits — including the command that ran
-  # this script. Nothing a child process can do reaches into that buffer, so hand
-  # back the one-liner that stops it instead of leaving a file to reappear.
-  note "Your current shell will re-write its history on exit. To prevent that, run: unset HISTFILE"
+  if $did; then
+    did_it Removed remove "shell history"
+  else
+    skipped "Shell history - nothing to remove"
+  fi
 }
 
 # -----------------------------------------------------------------------------
@@ -450,7 +482,7 @@ clean_history() {
 main() {
   echo ""
   if $DRY_RUN; then
-    echo "  🔍  Dry run — nothing will be removed."
+    echo "  🔍  Dry run — nothing will be changed."
     echo ""
   fi
 
@@ -463,9 +495,14 @@ main() {
 
   echo ""
   if $DRY_RUN; then
-    echo "  🔍  Dry run complete — re-run without --dry-run to remove the above."
+    echo "  🔍  Nothing was changed. Re-run without --dry-run to do the above."
   else
-    kept "Cleanup complete. Apps installed by load were left in place."
+    # The shell you launched this from holds its own commands in memory and
+    # appends them to a fresh history file when it exits — including the command
+    # that ran this script. Nothing a child process can do reaches into that
+    # buffer, so sign off with the one-liner that stops it rather than leave a
+    # file to reappear.
+    echo "  🧽🧼💧 You're clean now! The current shell will re-write its history on exit, run: unset HISTFILE"
   fi
   echo ""
 }

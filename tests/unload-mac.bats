@@ -30,7 +30,7 @@ setup() {
 # are filtered out) and that it sits in rm_path's body.
 @test "rm -rf appears only inside rm_path" {
   run awk '!/^[[:space:]]*#/ && /rm -rf/' "$DIR/../src/unload-mac.sh"
-  assert_output '  rm -rf "$p" && removing "Removed $(tilde "$p")"'
+  assert_output '  rm -rf "$p"'
   run awk '/^rm_path\(\) \{/{c=1} c{print} c&&/^\}/{exit}' "$DIR/../src/unload-mac.sh"
   assert_output --partial 'rm -rf "$p"'
 }
@@ -84,9 +84,11 @@ setup() {
 
 # The bare command must reach every phase - that is the whole interface now.
 # The throwaway HOME holds no Premiere profile, so the workspace phase returns
-# before it would go to the network: this stays an offline test.
+# before it would go to the network: this stays an offline test. HISTFILE is
+# unset for the same reason - an inherited one would point outside the throwaway
+# HOME and give the history phase real work to do.
 @test "the bare command runs all six cleanup phases" {
-  run env HOME="$BATS_TEST_TMPDIR/home" bash "$DIR/../src/unload-mac.sh" --dry-run
+  run env -u HISTFILE HOME="$BATS_TEST_TMPDIR/home" bash "$DIR/../src/unload-mac.sh" --dry-run
   assert_success
   assert_output --partial "Google Chrome"
   assert_output --partial "Work directory"
@@ -94,6 +96,34 @@ setup() {
   assert_output --partial "Mister Horse"
   assert_output --partial "Claude Code"
   assert_output --partial "Shell history"
+}
+
+# The preview is the run, reported: same phases, same order, same number of lines,
+# differing in one word. A path list underneath a phase is what that used to look
+# like, so a dry run naming the individual files is the regression to catch.
+@test "--dry-run reports phases rather than paths, and changes nothing" {
+  local h="$BATS_TEST_TMPDIR/home"
+  mkdir -p "$h/Downloads/load-mac"
+  touch "$h/.bash_history"
+  run env -u HISTFILE HOME="$h" bash "$DIR/../src/unload-mac.sh" --dry-run
+  assert_success
+  assert_line --partial "🚀  Would remove work directory (~/Downloads/load-mac)"
+  assert_line --partial "🚀  Would remove shell history"
+  refute_output --partial "~/.bash_history"
+  [ -e "$h/Downloads/load-mac" ]
+  [ -e "$h/.bash_history" ]
+}
+
+# The phases a machine has nothing to do for still have to say so: a run that
+# printed four lines where the last one printed six reads like it stopped early.
+# Chrome and Claude Code are left out - both can legitimately be live on the
+# machine running the suite, in which case their lines are the "would do it" ones.
+@test "a phase with nothing to do says so rather than printing nothing" {
+  run env -u HISTFILE HOME="$BATS_TEST_TMPDIR/home" bash "$DIR/../src/unload-mac.sh" --dry-run
+  assert_success
+  assert_line --partial "⏩  Work directory - nothing to remove"
+  assert_line --partial "⏩  Premiere Pro workspaces - nothing to remove"
+  assert_line --partial "⏩  Shell history - nothing to remove"
 }
 
 # -----------------------------------------------------------------------------
@@ -139,11 +169,12 @@ setup() {
 # rm_path
 # -----------------------------------------------------------------------------
 
-@test "rm_path removes a file and reports it" {
+# Every run reports one line per phase, so the removals underneath it are silent.
+@test "rm_path removes a file without narrating it" {
   touch "$HOME/victim"
   run rm_path "$HOME/victim"
   assert_success
-  assert_output --partial "Removed ~/victim"
+  assert_output ""
   [ ! -e "$HOME/victim" ]
 }
 
@@ -179,13 +210,17 @@ setup() {
   [ -e "$outside" ]
 }
 
-@test "rm_path under --dry-run reports but deletes nothing" {
+# --dry-run reports the same phases in the same words, so rm_path still has to
+# answer "was there anything there" - it just must not act on the answer.
+@test "rm_path under --dry-run deletes nothing and still reports the path existed" {
   touch "$HOME/survivor"
   DRY_RUN=true
   run rm_path "$HOME/survivor"
   assert_success
-  assert_output --partial "Would remove ~/survivor"
+  assert_output ""
   [ -e "$HOME/survivor" ]
+  run rm_path "$HOME/never-existed"
+  assert_failure
 }
 
 @test "tilde shortens \$HOME and leaves other paths alone" {
@@ -308,7 +343,6 @@ fake_ps() {
 @test "quit_chrome under --dry-run returns before it touches Chrome" {
   local body dry act
   body="$(awk '/^quit_chrome\(\) \{/{c=1} c{print} c&&/^\}/{exit}' "$DIR/../src/unload-mac.sh")"
-  echo "$body" | grep -q 'Would quit Google Chrome' || fail "quit_chrome has no --dry-run message"
   dry="$(echo "$body" | grep -n 'if \$DRY_RUN' | head -1 | cut -d: -f1)"
   act="$(echo "$body" | grep -n 'osascript\|kill -9' | head -1 | cut -d: -f1)"
   [ -n "$dry" ] || fail "quit_chrome does not check DRY_RUN"
