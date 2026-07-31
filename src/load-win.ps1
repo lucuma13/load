@@ -837,6 +837,11 @@ $PREMIERE_OK = Test-Path $PremiereDir
 $PREMIERE_RUNNING = $PREMIERE_OK -and ($null -ne (Get-Process -Name "Adobe Premiere Pro*" -ErrorAction SilentlyContinue))
 $WINGET_OK = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
 
+# Long path support (HKLM, machine-wide) - lifts the 260-char MAX_PATH cap for
+# any long-path-aware process, which matters the moment a tool walks a deeply
+# nested folder tree (e.g. mhl-suite).
+$LONG_PATHS_OK = (Get-RegValue "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" "LongPathsEnabled") -eq 1
+
 # Audacity, by its Windows uninstall entry rather than an install path, so it is
 # found however it got onto the machine - our own winget Audacity.Audacity, a
 # manual download, or the Muse Hub build.
@@ -1006,6 +1011,7 @@ function Show-Checklist {
     $toggle = "HKCU:\Keyboard Layout\Toggle"
     $togglesOk = ((Get-RegValue $toggle 'Hotkey') -eq "3") -and ((Get-RegValue $toggle 'Language Hotkey') -eq "3") -and ((Get-RegValue $toggle 'Layout Hotkey') -eq "3")
     $sysOk = $kbOk -and $togglesOk -and (Test-ExplorerViewFullyApplied)
+    $longPathsOk = (Get-RegValue "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" "LongPathsEnabled") -eq 1
     $premiereRunning = $PREMIERE_OK -and ($null -ne (Get-Process -Name "Adobe Premiere Pro*" -ErrorAction SilentlyContinue))
     $ahkActive = Test-Path $AhkScript
     $ahkInstalled = [bool](Find-AhkExe)
@@ -1043,6 +1049,11 @@ function Show-Checklist {
     # System preferences - keyboard repeat speed/delay, the disabled
     # layout-switch hotkeys and Explorer's default folder view.
     if ($sysOk) { Done "System preferences" } else { WouldRun "System preferences" }
+
+    # Long path support - HKLM, needs elevation.
+    if ($longPathsOk) { Done "Enable Windows long path support" }
+    elseif ($FAST) { Skipped "Enable Windows long path support - requires --full (needs admin elevation)" }
+    else { WouldRun "Enable Windows long path support" }
 
     # Default apps - one line covering every $DEFAULT_APPS target. "Done" once
     # every installed app owns its types; nothing to do if none of them are
@@ -1345,6 +1356,11 @@ function Invoke-ElevatedInstall {
     $cmds = @()
     $wantMisterHorse = $false
     $wantFlickerFree = $false
+
+    # Long path support.
+    if (-not $LONG_PATHS_OK) {
+        $cmds += 'reg add "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled /t REG_DWORD /d 1 /f'
+    }
 
     # Premiere plugins - download now (no admin needed), install in the elevated
     # batch. Both run unattended (msiexec /qn, NSIS /S) and both return

@@ -177,7 +177,7 @@ Describe "Plugin download links" -Tag 'Live' {
 # to apply the rest of the setup and wait on that process, so an installer that
 # stops on a licence page or a "Next" button hangs the whole run behind a window
 # the user has to find. The non-winget plugins are the ones that need saying
-# explicitly: msiexec takes /qn, and Flicker Free's NSIS installer takes /S
+# explicitly: msiexec takes /qn, Flicker Free's NSIS installer takes /S
 # (case-sensitive - a lowercase /s reaches the script as an unknown argument and
 # the wizard opens anyway). Text-based, because Invoke-ElevatedInstall lives
 # below the $env:LOAD_LIB boundary and builds these as command-line strings for
@@ -206,9 +206,16 @@ Describe "elevated installers run unattended" {
         $mh[0] | Should -CMatch '\s/qn\b'
     }
 
+    It "sets the long path registry value unattended" {
+        $lp = @($queued | Where-Object { $_ -match 'LongPathsEnabled' })
+        $lp.Count | Should -Be 1 -Because "long path support is queued once"
+        $lp[0] | Should -CMatch '\s/f\b' -Because "without /f reg.exe prompts to overwrite an existing value"
+        $lp[0] | Should -Match 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem' -Because "LongPathsEnabled must be written to its documented key"
+    }
+
     # The catch-all: anything added to the batch later must carry a silent switch too.
     It "queues no installer that can stop for input" {
-        $loud = @($queued | Where-Object { $_ -notmatch '(?-i)\s(/S|/qn|--silent)\b' })
+        $loud = @($queued | Where-Object { $_ -notmatch '(?-i)\s(/S|/qn|/f|--silent)\b' })
         $loud | Should -BeNullOrEmpty -Because (
             "each of these can open a window an unattended run then waits on:`n$($loud -join "`n")")
     }
