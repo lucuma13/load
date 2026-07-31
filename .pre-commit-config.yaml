@@ -86,6 +86,6 @@ repos:
       - id: powershell-analyzer
         name: PowerShell lint (PSScriptAnalyzer)
         language: system
-        entry: "pwsh -NoProfile -Command '$f = Invoke-ScriptAnalyzer -Path src -Recurse -Settings ./PSScriptAnalyzerSettings.psd1 -Severity Information,Warning,Error; $f += Invoke-ScriptAnalyzer -Path tests -Recurse -Settings ./PSScriptAnalyzerSettings.psd1 -Severity Information,Warning,Error -ExcludeRule PSUseDeclaredVarsMoreThanAssignments; if ($f) { $f | Format-Table RuleName,Severity,ScriptName,Line,Message -AutoSize -Wrap; exit 1 }'"
+        entry: "pwsh -NoProfile -Command '$f = @(Invoke-ScriptAnalyzer -Path src -Recurse -Settings ./PSScriptAnalyzerSettings.psd1 -Severity Information,Warning,Error); $f += Invoke-ScriptAnalyzer -Path tests -Recurse -Settings ./PSScriptAnalyzerSettings.psd1 -Severity Information,Warning,Error -ExcludeRule PSUseDeclaredVarsMoreThanAssignments; if ($f) { $f | Format-Table RuleName,Severity,ScriptName,Line,Message -AutoSize -Wrap; exit 1 }'"
         files: \.ps1$
         pass_filenames: false
