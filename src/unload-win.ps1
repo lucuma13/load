@@ -29,7 +29,9 @@ $f="$env:TEMP\unload-win.ps1"; Invoke-WebRequest -Uri
 "https://raw.githubusercontent.com/lucuma13/load/main/src/unload-win.ps1"
 -UseBasicParsing -OutFile $f -ErrorAction Stop; if(-not ((Get-Content $f
 -Raw).TrimEnd().EndsWith('# === END unload-win.ps1 ==='))){throw "download
-incomplete - try again"}; powershell -ExecutionPolicy Bypass -File $f
+incomplete - try again"}; powershell -ExecutionPolicy Bypass -File $f;
+Set-PSReadLineOption -HistorySaveStyle SaveNothing; Remove-Item
+(Get-PSReadLineOption).HistorySavePath -Force -ErrorAction SilentlyContinue
 #>
 
 $ErrorActionPreference = "Continue"
@@ -221,6 +223,36 @@ function Get-HistoryPath {
                 Select-Object -ExpandProperty FullName)
     }
     return @($paths | Select-Object -Unique)
+}
+
+# Test-InCallerSession - true when this is running in the console the user types
+# into, rather than in a child process.
+#
+# The streamed entrypoint shares the caller's process, so PSReadLine settings
+# made here are the console's own. The Constrained Language Mode fallback
+# entrypoint runs, a separate process whose settings die with it. A dynamic
+# scriptblock has no file behind it, so $PSCommandPath is empty for the first
+# and set for the second.
+function Test-InCallerSession {
+    param([string]$CommandPath = $PSCommandPath)
+    return [string]::IsNullOrEmpty($CommandPath)
+}
+
+# Stop-HistorySaving - stop PSReadLine persisting this session's commands, and
+# return whether that took effect.
+#
+# Returning $true from a child process would be a false assurance: the console
+# that outlives it keeps saving. So the session check comes first, before the
+# call that would otherwise succeed against a PSReadLine nobody is typing at.
+function Stop-HistorySaving {
+    param([bool]$InCallerSession = (Test-InCallerSession))
+    if (-not $InCallerSession) { return $false }
+    if (-not (Get-Command Set-PSReadLineOption -ErrorAction SilentlyContinue)) { return $false }
+    try {
+        Set-PSReadLineOption -HistorySaveStyle SaveNothing -ErrorAction Stop
+        return $true
+    }
+    catch { return $false }
 }
 
 # Test-UnderHome <path> - true only for a path strictly inside $HOME (or
@@ -595,9 +627,12 @@ function Clear-ShellHistory {
     # The console you launched this from holds its own commands in memory and
     # PSReadLine appends them to a fresh history file as you keep typing -
     # including the command that ran this script. Clear-History empties this
-    # session's buffer; a console that outlives this script is the caller's to
-    # close, so the final summary line says so.
-    if (-not $DRY_RUN) { Clear-History -ErrorAction SilentlyContinue }
+    # session's buffer, and Stop-HistorySaving keeps PSReadLine from writing the
+    # file back.
+    if (-not $DRY_RUN) {
+        Clear-History -ErrorAction SilentlyContinue
+        $script:HISTORY_STOPPED = Stop-HistorySaving
+    }
     Report -Did $did -DoneMsg "Cleared shell history" -WouldMsg "Would clear shell history" -SkipMsg "Shell history - Nothing to remove"
 }
 
@@ -626,7 +661,13 @@ try {
 
     Write-Host ""
     if ($DRY_RUN) { Write-Host "  Dry run complete - re-run without --dry-run to remove the above." }
-    else { Write-Host "  You're clean now! Close this console when you're done - PSReadLine re-writes its history file as you type." }
+    elseif ($script:HISTORY_STOPPED) { Write-Host "  You're clean now!" }
+    else {
+        # Reached when this run cannot switch saving off.
+        Write-Host "  Almost clean now!"
+        Write-Host "  Run this here if it doesn't run automatically:"
+        Write-Host '      Set-PSReadLineOption -HistorySaveStyle SaveNothing; Remove-Item (Get-PSReadLineOption).HistorySavePath -Force -ErrorAction SilentlyContinue'
+    }
     Write-Host ""
 }
 finally {

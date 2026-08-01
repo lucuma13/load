@@ -502,7 +502,12 @@ main() {
     # that ran this script. Nothing a child process can do reaches into that
     # buffer, so sign off with the one-liner that stops it rather than leave a
     # file to reappear.
-    echo "  🧽🧼💧 You're clean now! The current shell will re-write its history on exit, run: unset HISTFILE"
+    echo "  🧽🧼💧 Almost clean now!"
+    echo '  Run this here to remove current session shell history:'
+    # Single-quoted because this line is for the user to paste, so the
+    # expressions must expand in their shell, not ours.
+    # shellcheck disable=SC2016
+    echo '      unset HISTFILE; rm -f "${ZDOTDIR:-$HOME}/.zsh_history"'
   fi
   echo ""
 }

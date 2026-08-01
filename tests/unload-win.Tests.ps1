@@ -445,6 +445,81 @@ Describe "Shell history target paths" {
     }
 }
 
+# Deleting the history file is only half the job: PSReadLine's default save
+# style is SaveIncrementally, so it writes the file straight back as the user
+# keeps typing.
+Describe "Stopping history saving" {
+    BeforeAll {
+        $script:originalStyle = (Get-PSReadLineOption -ErrorAction SilentlyContinue).HistorySaveStyle
+    }
+
+    AfterAll {
+        # Never leave the suite's own session with saving switched off.
+        if ($script:originalStyle) { Set-PSReadLineOption -HistorySaveStyle $script:originalStyle }
+    }
+
+    It "switches PSReadLine to SaveNothing" {
+        if (-not (Get-Command Set-PSReadLineOption -ErrorAction SilentlyContinue)) {
+            Set-ItResult -Skipped -Because "PSReadLine is not available on this host"
+            return
+        }
+        Stop-HistorySaving -InCallerSession $true | Should -BeTrue
+        (Get-PSReadLineOption).HistorySaveStyle | Should -Be "SaveNothing"
+    }
+
+    # The Constrained Language Mode entrypoint runs `powershell -File`, so the
+    # console the user types at is a different process that carries on saving.
+    # Succeeding there would print "You're clean now!" over a console still
+    # writing history, so the child case has to report failure and let the
+    # summary hand the user the line instead.
+    It "reports failure from a child process rather than a false assurance" {
+        Stop-HistorySaving -InCallerSession $false | Should -BeFalse
+    }
+
+    It "leaves the save style alone when it cannot reach the caller's session" {
+        if (-not (Get-Command Set-PSReadLineOption -ErrorAction SilentlyContinue)) {
+            Set-ItResult -Skipped -Because "PSReadLine is not available on this host"
+            return
+        }
+        Set-PSReadLineOption -HistorySaveStyle SaveIncrementally
+        Stop-HistorySaving -InCallerSession $false | Out-Null
+        (Get-PSReadLineOption).HistorySaveStyle | Should -Be "SaveIncrementally"
+    }
+
+    # The entrypoint is `& ([scriptblock]::Create(...))`, which runs in a child
+    # scope of the caller's session. PSReadLine's options are process-wide rather
+    # than scoped, which is the whole reason this works - assert it, because a
+    # scoped setting would leave the console still writing history.
+    It "takes effect on the caller's session, not just the scriptblock's scope" {
+        if (-not (Get-Command Set-PSReadLineOption -ErrorAction SilentlyContinue)) {
+            Set-ItResult -Skipped -Because "PSReadLine is not available on this host"
+            return
+        }
+        Set-PSReadLineOption -HistorySaveStyle SaveIncrementally
+        & ([scriptblock]::Create("Stop-HistorySaving -InCallerSession `$true")) | Out-Null
+        (Get-PSReadLineOption).HistorySaveStyle | Should -Be "SaveNothing"
+    }
+}
+
+# Which entrypoint was used decides whether this process is the console at all.
+# A dynamic scriptblock has no file behind it; anything run from a file - the
+# --File fallback included - does.
+Describe "Detecting the caller's session" {
+    It "treats a streamed scriptblock as the caller's own session" {
+        Test-InCallerSession -CommandPath "" | Should -BeTrue
+    }
+
+    It "treats a run from a file as a child process" {
+        Test-InCallerSession -CommandPath "C:\Users\me\AppData\Local\Temp\unload-win.ps1" | Should -BeFalse
+    }
+
+    # The discriminator the default argument relies on: $PSCommandPath is empty
+    # inside a scriptblock built at runtime, which is the streamed entrypoint.
+    It "reads an empty PSCommandPath inside a dynamic scriptblock" {
+        & ([scriptblock]::Create('$PSCommandPath')) | Should -BeNullOrEmpty
+    }
+}
+
 # The workspaces filenames are read from the repo's src/data listing, so what is
 # testable offline is the parts either side of the fetch - where the files are
 # looked for, and what happens when the listing can't be read.

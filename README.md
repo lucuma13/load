@@ -22,7 +22,7 @@ Bare command runs on --fast mode first, then pauses before continuing into --ful
 ### macOS 🍎
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/lucuma13/load/main/src/unload-mac.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/lucuma13/load/main/src/unload-mac.sh); unset HISTFILE; rm -f "${ZDOTDIR:-$HOME}/.zsh_history"
 ```
 
 ### Windows 🚪
