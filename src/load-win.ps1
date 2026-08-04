@@ -6,11 +6,11 @@ Windows workstation setup script
 Copyright (c) 2026 Luis Gomez Gutierrez
 
 .EXAMPLE
-# Stream and run in memory (avoids MOTW / blocking GPO). Flags: --fast/--full/--dry-run.
+# Stream and run in memory (avoids MOTW / blocking GPO). Flags: --fast/--full/--dry-run/--no-ahk.
 & ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing -Uri "https://raw.githubusercontent.com/lucuma13/load/main/src/load-win.ps1").Content))
 
 .EXAMPLE
-# Alternative for Constrained Language Mode (download and run, gracefully downgrade under $CLM). Flags: --fast/--full/--dry-run.
+# Alternative for Constrained Language Mode (download and run, gracefully downgrade under $CLM). Flags: --fast/--full/--dry-run/--no-ahk.
 $f="$env:TEMP\load-win.ps1"; Invoke-WebRequest -Uri "https://raw.githubusercontent.com/lucuma13/load/main/src/load-win.ps1" -UseBasicParsing -OutFile $f -ErrorAction Stop; if(-not ((Get-Content $f -Raw).TrimEnd().EndsWith('# === END load-win.ps1 ==='))){throw "download incomplete - try again"}; powershell -ExecutionPolicy Bypass -File $f
 #>
 
@@ -655,6 +655,8 @@ function Restart-Explorer {
 # live in the user's home), so it's kept out of the elevated machine-wide batch
 # and installed in the non-elevated process.
 $UV_PKG = "astral-sh.uv"
+# Named because --no-ahk drops it from every list it appears in.
+$AHK_PKG = "AutoHotkey.AutoHotkey"
 $CORE_PKGS = @(
     "astral-sh.uv",
     "MediaArea.MediaInfo",
@@ -814,6 +816,13 @@ if ($env:LOAD_LIB) { return }
 $FULL = $args -contains "--full"
 $FAST = $args -contains "--fast"
 $DRY_RUN = $args -contains "--dry-run"
+
+# --no-ahk - leave AutoHotkey and its macros out of the run entirely.
+$NO_AHK = $args -contains "--no-ahk"
+if ($NO_AHK) {
+    $FULL_PKGS = @($FULL_PKGS | Where-Object { $_ -ne $AHK_PKG })
+    $USER_SCOPE_PKGS = @($USER_SCOPE_PKGS | Where-Object { $_ -ne $AHK_PKG })
+}
 
 # No flag given - run the Fast pass inline now (quick config), then pause and
 # run the Full pass in this same process. Bail if there's no interactive console
@@ -1041,7 +1050,8 @@ function Show-Checklist {
     # Activate AHK macros - applied whenever AutoHotkey is present. In --fast we
     # might only have a pre-installed AutoHotkey to work with (installing it is
     # a Full-pass step).
-    if ($ahkActive) { Done     "Activate AHK macros" }
+    if ($NO_AHK) { Skipped  "Activate AHK macros - --no-ahk" }
+    elseif ($ahkActive) { Done     "Activate AHK macros" }
     elseif ($ahkInstalled) { WouldRun "Activate AHK macros" }
     elseif ($FAST) { Skipped  "Activate AHK macros - AutoHotkey not installed" }
     else { WouldRun "Activate AHK macros" }
@@ -1136,6 +1146,11 @@ function Install-AhkScript {
     # Download the AHK macro script into the work dir and launch it now so the
     # shortcuts work immediately. The file's presence there is the "done"
     # marker.
+    #
+    # --no-ahk stops here too: the package is already out of the install lists,
+    # but the macros would otherwise still be dropped and launched on a machine
+    # that has its own AutoHotkey.
+    if ($NO_AHK) { return }
     if (Test-Path $AhkScript) { return }
     $ahkExe = Find-AhkExe
     if (-not $ahkExe) {
