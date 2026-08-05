@@ -6,11 +6,11 @@ Windows workstation setup script
 Copyright (c) 2026 Luis Gomez Gutierrez
 
 .EXAMPLE
-# Stream and run in memory (avoids MOTW / blocking GPO). Flags: --fast/--full/--dry-run/--no-ahk.
+# Stream and run in memory (avoids MOTW / blocking GPO). Flags: --fast/--full/--dry-run/--mse.
 & ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing -Uri "https://raw.githubusercontent.com/lucuma13/load/main/src/load-win.ps1").Content))
 
 .EXAMPLE
-# Alternative for Constrained Language Mode (download and run, gracefully downgrade under $CLM). Flags: --fast/--full/--dry-run/--no-ahk.
+# Alternative for Constrained Language Mode (download and run, gracefully downgrade under $CLM). Flags: --fast/--full/--dry-run/--mse.
 $f="$env:TEMP\load-win.ps1"; Invoke-WebRequest -Uri "https://raw.githubusercontent.com/lucuma13/load/main/src/load-win.ps1" -UseBasicParsing -OutFile $f -ErrorAction Stop; if(-not ((Get-Content $f -Raw).TrimEnd().EndsWith('# === END load-win.ps1 ==='))){throw "download incomplete - try again"}; powershell -ExecutionPolicy Bypass -File $f
 #>
 
@@ -655,7 +655,7 @@ function Restart-Explorer {
 # live in the user's home), so it's kept out of the elevated machine-wide batch
 # and installed in the non-elevated process.
 $UV_PKG = "astral-sh.uv"
-# Named because --no-ahk drops it from every list it appears in.
+# Named because --mse drops it from every list it appears in.
 $AHK_PKG = "AutoHotkey.AutoHotkey"
 $CORE_PKGS = @(
     "astral-sh.uv",
@@ -817,9 +817,11 @@ $FULL = $args -contains "--full"
 $FAST = $args -contains "--fast"
 $DRY_RUN = $args -contains "--dry-run"
 
-# --no-ahk - leave AutoHotkey and its macros out of the run entirely.
-$NO_AHK = $args -contains "--no-ahk"
-if ($NO_AHK) {
+# --mse - leave AutoHotkey and its macros out of the run entirely, and skip the
+# two Premiere plugins (Mister Horse, Flicker Free). Everything else Premiere
+# still applies: shortcuts, workspaces, preferences, LUTs and $PREMIERE_PKGS.
+$MSE = $args -contains "--mse"
+if ($MSE) {
     $FULL_PKGS = @($FULL_PKGS | Where-Object { $_ -ne $AHK_PKG })
     $USER_SCOPE_PKGS = @($USER_SCOPE_PKGS | Where-Object { $_ -ne $AHK_PKG })
 }
@@ -1050,7 +1052,7 @@ function Show-Checklist {
     # Activate AHK macros - applied whenever AutoHotkey is present. In --fast we
     # might only have a pre-installed AutoHotkey to work with (installing it is
     # a Full-pass step).
-    if ($NO_AHK) { Skipped  "Activate AHK macros - --no-ahk" }
+    if ($MSE) { Skipped  "Activate AHK macros - --mse" }
     elseif ($ahkActive) { Done     "Activate AHK macros" }
     elseif ($ahkInstalled) { WouldRun "Activate AHK macros" }
     elseif ($FAST) { Skipped  "Activate AHK macros - AutoHotkey not installed" }
@@ -1083,8 +1085,12 @@ function Show-Checklist {
     foreach ($pkg in $CORE_PKGS) { $apps += @{ name = (Get-PkgAlias $pkg); ok = (Test-PkgReallyInstalled $pkg) } }
     if ($FULL) { foreach ($pkg in $FULL_PKGS) { $apps += @{ name = (Get-PkgAlias $pkg); ok = (Test-PkgReallyInstalled $pkg) } } }
     if ($PREMIERE_OK) {
-        $apps += @{ name = "Mister Horse"; ok = (Test-MisterHorseInstalled) }
-        $apps += @{ name = "Flicker Free"; ok = (Test-FlickerFreeInstalled) }
+        # The plugins are the only Premiere step --mse drops; $PREMIERE_PKGS and
+        # every config step stay.
+        if (-not $MSE) {
+            $apps += @{ name = "Mister Horse"; ok = (Test-MisterHorseInstalled) }
+            $apps += @{ name = "Flicker Free"; ok = (Test-FlickerFreeInstalled) }
+        }
         foreach ($pkg in $PREMIERE_PKGS) { $apps += @{ name = (Get-PkgAlias $pkg); ok = (Test-WingetInstalled $pkg) } }
     }
     foreach ($pkg in $CORE_UV) { $apps += @{ name = $pkg; ok = (Test-UvInstalled $pkg) } }
@@ -1147,10 +1153,10 @@ function Install-AhkScript {
     # shortcuts work immediately. The file's presence there is the "done"
     # marker.
     #
-    # --no-ahk stops here too: the package is already out of the install lists,
+    # --mse stops here too: the package is already out of the install lists,
     # but the macros would otherwise still be dropped and launched on a machine
     # that has its own AutoHotkey.
-    if ($NO_AHK) { return }
+    if ($MSE) { return }
     if (Test-Path $AhkScript) { return }
     $ahkExe = Find-AhkExe
     if (-not $ahkExe) {
@@ -1371,6 +1377,7 @@ function Invoke-ElevatedInstall {
     $cmds = @()
     $wantMisterHorse = $false
     $wantFlickerFree = $false
+    $wantInstall = @()
 
     # Long path support.
     if (-not $LONG_PATHS_OK) {
@@ -1389,7 +1396,10 @@ function Invoke-ElevatedInstall {
     # /qn that carries no dialog, and "&" ignores exit codes, so the install
     # would vanish leaving nothing in the batch output or the event log - which
     # is how Mister Horse got skipped behind an Acrobat install.
-    if ($PREMIERE_OK) {
+    #
+    # Skipped entirely under --mse - including the downloads, so nothing is
+    # fetched only to be thrown away.
+    if ($PREMIERE_OK -and -not $MSE) {
         if (-not (Test-MisterHorseInstalled)) {
             $pmPath = "$WorkDir\MisterHorseProductManager.msi"
             curl.exe -fsSL -o $pmPath "https://misterhorse.com/downloads/product-manager/win"
@@ -1434,6 +1444,10 @@ function Invoke-ElevatedInstall {
             }
             else {
                 $cmds += "winget install --id $id --exact --silent --scope machine --accept-package-agreements --accept-source-agreements"
+                # Only fresh installs are worth re-checking afterwards: a failed
+                # upgrade leaves the package present, so the check can't tell it
+                # from a successful one (and the old version still works).
+                $wantInstall += $id
             }
         }
     }
@@ -1470,6 +1484,22 @@ function Invoke-ElevatedInstall {
             Remove-Item -LiteralPath $ffDir -Recurse -Force -ErrorAction SilentlyContinue
         }
         else { Write-Host "  [warn] Flicker Free did not install - re-run with --full, or run the installer in $ffDir yourself" }
+    }
+
+    # Same idea for the winget packages: "&" runs every command regardless of
+    # the previous one's exit code - which is what we want, one bad package
+    # must not cost us the rest - but it also means a failure is swallowed, and
+    # the cmd window closes over the error text before it can be read. So
+    # re-check the fresh installs against the same test that queued them and
+    # name the ones that didn't land. Skipped when the batch never ran: the
+    # decline is already reported, and listing every package on top of it is
+    # noise. Anything named here is re-queued automatically on the next --full
+    # run, so this is a heads-up, not an error.
+    if ($elevated -and $wantInstall.Count) {
+        $missing = @($wantInstall | Where-Object { -not (Test-PkgReallyInstalled $_) })
+        if ($missing.Count) {
+            Write-Host "  [warn] These did not install: $(($missing | ForEach-Object { Get-PkgAlias $_ }) -join ', '). The rest of the batch still ran - re-run with --full to retry them."
+        }
     }
 
     return $elevated

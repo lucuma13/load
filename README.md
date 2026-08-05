@@ -17,7 +17,7 @@ Alternative:
 $f="$env:TEMP\load-win.ps1"; Invoke-WebRequest -Uri "https://raw.githubusercontent.com/lucuma13/load/main/src/load-win.ps1" -UseBasicParsing -OutFile $f -ErrorAction Stop; if(-not ((Get-Content $f -Raw).TrimEnd().EndsWith('# === END load-win.ps1 ==='))){throw "download incomplete - try again"}; powershell -ExecutionPolicy Bypass -File $f
 ```
 
-Bare command runs on --fast mode first, then pauses before continuing into --full. --dry-run is also available. Add --no-ahk to skip AutoHotkey and its macros.
+Bare command runs on --fast mode first, then pauses before continuing into --full. --dry-run and --mse are also available.
 
 ### macOS 🍎
 
