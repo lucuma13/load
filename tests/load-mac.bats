@@ -9,7 +9,10 @@ setup() {
   bats_load_library bats-assert
   LOAD_LIB=1 source "$DIR/../src/load-mac.sh"
   PREFS="$BATS_TEST_TMPDIR/prefs"
-  CFG="$BATS_TEST_TMPDIR/audacity.cfg"
+  # Scratch preferences domain for the Audacity tests - v4 settings are a plist,
+  # so they go through `defaults` rather than a file in the tmpdir.
+  AUDACITY_TEST_DOMAIN="test.load.audacity"
+  defaults delete "$AUDACITY_TEST_DOMAIN" 2>/dev/null || true
   # Discover every captured version; adding a premiere_pro_* fixture dir is enough.
   PREMIERE_VERSIONS=()
   for d in "$DIR"/fixtures/premiere_pro_*/; do
@@ -21,6 +24,7 @@ setup() {
 
 teardown() {
   defaults delete "$MEDIA_CACHE_DOMAIN" 2>/dev/null || true
+  defaults delete "$AUDACITY_TEST_DOMAIN" 2>/dev/null || true
 }
 
 # Truncation safety: the installer's work is wrapped in main(), invoked on the very
@@ -322,88 +326,21 @@ strip_forced() {
   done
 }
 
-# audacity_set_pref edits a wxFileConfig INI, so it has to do its own
-# section/key handling. These cover the four shapes it meets in the wild: the key
-# already present, the section present but the key still at its default, no
-# section at all, and no file at all (a cask install Audacity has never been
-# launched from).
-@test "audacity_set_pref replaces an existing key in place" {
-  printf 'PrefsVersion=1.1.1r1\n[GUI]\nTheme=classic\nDefaultViewModeChoiceNew=Waveform\n[Tracks]\nAutoScroll=1\n' >"$CFG"
-  run audacity_set_pref "$CFG" GUI DefaultViewModeChoiceNew Spectrogram
-  assert_success
-  run cat "$CFG"
-  assert_output 'PrefsVersion=1.1.1r1
-[GUI]
-Theme=classic
-DefaultViewModeChoiceNew=Spectrogram
-[Tracks]
-AutoScroll=1'
-}
-
-@test "audacity_set_pref adds the key when the section exists without it" {
-  printf '[GUI]\nTheme=classic\n[Tracks]\nAutoScroll=1\n' >"$CFG"
-  run audacity_set_pref "$CFG" GUI DefaultViewModeChoiceNew Spectrogram
-  assert_success
-  run cat "$CFG"
-  assert_output '[GUI]
-DefaultViewModeChoiceNew=Spectrogram
-Theme=classic
-[Tracks]
-AutoScroll=1'
-}
-
-@test "audacity_set_pref appends the section when it is absent" {
-  printf 'PrefsVersion=1.1.1r1\n[Tracks]\nAutoScroll=1\n' >"$CFG"
-  run audacity_set_pref "$CFG" GUI DefaultViewModeChoiceNew Spectrogram
-  assert_success
-  run cat "$CFG"
-  assert_output 'PrefsVersion=1.1.1r1
-[Tracks]
-AutoScroll=1
-[GUI]
-DefaultViewModeChoiceNew=Spectrogram'
-}
-
-# The fresh-install path: Audacity writes no cfg (and no containing directory)
-# until it first quits, so the helper must author both or the setting would only
-# ever land on a second run of the installer.
-@test "audacity_set_pref creates the file and its directory when neither exists" {
-  local fresh="$BATS_TEST_TMPDIR/fresh/audacity/audacity.cfg"
-  run audacity_set_pref "$fresh" GUI DefaultViewModeChoiceNew Spectrogram
-  assert_success
-  run cat "$fresh"
-  assert_output '[GUI]
-DefaultViewModeChoiceNew=Spectrogram'
-}
-
-# Keys are only unique within a section - [Tracks] and [GUI] can both hold a
-# DefaultViewModeChoiceNew - so a file-wide match would write the wrong one. The
-# decoy in [Tracks] must come back untouched.
-@test "audacity_set_pref only edits the named section" {
-  printf '[Tracks]\nDefaultViewModeChoiceNew=Waveform\n[GUI]\nDefaultViewModeChoiceNew=Waveform\n' >"$CFG"
-  run audacity_set_pref "$CFG" GUI DefaultViewModeChoiceNew Spectrogram
-  assert_success
-  run cat "$CFG"
-  assert_output '[Tracks]
-DefaultViewModeChoiceNew=Waveform
-[GUI]
-DefaultViewModeChoiceNew=Spectrogram'
-}
-
-# Both readers slice each AUDACITY_PREFS entry positionally:
-# apply_audacity_prefs takes the section from before the first "/" and splits the
-# rest on the first "=", and audacity_applied greps that rest as a whole cfg line.
-# An entry missing either separator would silently write to the wrong section or
-# key, so pin the shape.
-@test "every AUDACITY_PREFS entry is a Section/Key=Value triple" {
+# Both readers slice each AUDACITY_PREFS entry positionally: apply_audacity_prefs
+# writes everything before the first "=" as the plist key, and audacity_applied
+# compares the rest against what the domain reads back. load-win.ps1 splits the
+# same string once more, on the ".", into QSettings' section and key - so an
+# entry missing either separator would write to the wrong key on one platform or
+# the other. Pin the shape.
+@test "every AUDACITY_PREFS entry is a Section.Key=Value triple" {
   [ "${#AUDACITY_PREFS[@]}" -gt 0 ]
   for entry in "${AUDACITY_PREFS[@]}"; do
-    assert_regex "$entry" '^[A-Za-z]+/[A-Za-z]+=[^=/]+$'
+    assert_regex "$entry" '^[A-Za-z]+\.[A-Za-z]+=[^=.]+$'
   done
 }
 
 # The two platform scripts must enforce the same Audacity settings - the shared
-# "Section/Key=Value" shape exists so the lists can be compared verbatim. Guards
+# "Section.Key=Value" shape exists so the lists can be compared verbatim. Guards
 # against one side being edited alone. (The Windows suite asserts the same thing
 # from its end.)
 @test "AUDACITY_PREFS matches the list in load-win.ps1" {
@@ -415,73 +352,47 @@ DefaultViewModeChoiceNew=Spectrogram'
   assert_equal "$(printf '%s\n' "${lines[@]}")" "$(printf '%s\n' "${AUDACITY_PREFS[@]}")"
 }
 
-# audacity_applied backs the checklist line. It must be all-or-nothing: a cfg
+# audacity_applied backs the checklist line. It must be all-or-nothing: a domain
 # carrying only some of the settings is NOT applied, or a partly-configured
-# Audacity would report as done and never get the rest.
+# Audacity would report as done and never get the rest. Driven with a two-entry
+# list so the loop is actually exercised whatever the real list holds.
 @test "audacity_applied is true only when every pref is present" {
-  AUDACITY_CFG="$CFG"
-  # Nothing there at all.
+  AUDACITY_DOMAIN="$AUDACITY_TEST_DOMAIN"
+  AUDACITY_PREFS=("spectrogram.maxFreq=48000" "spectrogram.minFreq=0")
+  # Nothing written at all - the domain does not even exist.
   run audacity_applied
   assert_failure
   # Only the first setting.
-  printf '[GUI]\nDefaultViewModeChoiceNew=Spectrogram\n' >"$CFG"
+  defaults write "$AUDACITY_DOMAIN" spectrogram.maxFreq -int 48000
   run audacity_applied
   assert_failure
   # Both.
-  audacity_set_pref "$CFG" Spectrum MaxFreq 48000
+  defaults write "$AUDACITY_DOMAIN" spectrogram.minFreq -int 0
   run audacity_applied
   assert_success
 }
 
-# A value that merely CONTAINS ours must not count - grep without -x would call
-# MaxFreq=480000 (or a commented-out line) a match and skip the real write.
-@test "audacity_applied does not match a partial line" {
-  AUDACITY_CFG="$CFG"
-  printf '[GUI]\nDefaultViewModeChoiceNew=Spectrogram\n[Spectrum]\nMaxFreq=480000\n' >"$CFG"
+# A value that merely CONTAINS ours must not count: 480000 starts with 48000, and
+# a substring match would call it applied and skip the real write.
+@test "audacity_applied does not match a value ours is a prefix of" {
+  AUDACITY_DOMAIN="$AUDACITY_TEST_DOMAIN"
+  AUDACITY_PREFS=("spectrogram.maxFreq=48000")
+  defaults write "$AUDACITY_DOMAIN" spectrogram.maxFreq -int 480000
   run audacity_applied
   assert_failure
 }
 
-# The real run applies several prefs to one file in sequence, landing in
-# different sections. Guards that a later call neither disturbs an earlier one
-# nor collapses the sections into each other.
-@test "audacity_set_pref applies successive prefs to different sections" {
-  printf 'PrefsVersion=1.1.1r1\n[GUI]\nTheme=classic\n' >"$CFG"
-  audacity_set_pref "$CFG" GUI DefaultViewModeChoiceNew Spectrogram
-  audacity_set_pref "$CFG" Spectrum MaxFreq 48000
-  run cat "$CFG"
-  assert_output 'PrefsVersion=1.1.1r1
-[GUI]
-DefaultViewModeChoiceNew=Spectrogram
-Theme=classic
-[Spectrum]
-MaxFreq=48000'
-}
-
-# Audacity writes audacity.cfg with the platform's native endings, so the Windows
-# one is CRLF where ours is LF. A CRLF file is the shape a normalising rewrite (or
-# a `.*$` key match, which eats the CR) would visibly destroy, so it is what we
-# assert on - the same guarantee set_pref_node carries for the Premiere prefs.
-@test "audacity_set_pref preserves CRLF endings" {
-  printf '[GUI]\r\nTheme=classic\r\nDefaultViewModeChoiceNew=Waveform\r\n' >"$CFG"
-  run audacity_set_pref "$CFG" GUI DefaultViewModeChoiceNew Spectrogram
-  assert_success
-  # Every ending still CRLF, no bare LF introduced, and the value did change.
-  run perl -0777 -ne 'my $crlf=()=/\r\n/g; my $bare=()=/(?<!\r)\n/g; print "crlf=$crlf bare=$bare"' "$CFG"
-  assert_output 'crlf=3 bare=0'
-  run grep -c $'DefaultViewModeChoiceNew=Spectrogram\r$' "$CFG"
+# The key really does contain a dot, which `defaults` must take literally rather
+# than as a path into a nested value - the whole scheme rests on it.
+@test "audacity_applied reads a dotted key back verbatim" {
+  AUDACITY_DOMAIN="$AUDACITY_TEST_DOMAIN"
+  AUDACITY_PREFS=("spectrogram.maxFreq=48000")
+  defaults write "$AUDACITY_DOMAIN" "${AUDACITY_PREFS[0]%%=*}" -int "${AUDACITY_PREFS[0]#*=}"
+  run defaults read "$AUDACITY_DOMAIN" spectrogram.maxFreq
+  assert_output '48000'
+  run audacity_applied
   assert_success
 }
-
-@test "audacity_set_pref is idempotent" {
-  printf 'PrefsVersion=1.1.1r1\n[GUI]\nTheme=classic\n' >"$CFG"
-  audacity_set_pref "$CFG" GUI DefaultViewModeChoiceNew Spectrogram
-  cp "$CFG" "$CFG.first"
-  audacity_set_pref "$CFG" GUI DefaultViewModeChoiceNew Spectrogram
-  run cmp -s "$CFG.first" "$CFG"
-  assert_success
-}
-
 @test "resolve_mode parses flags" {
   run resolve_mode --fast
   assert_output 'fast'

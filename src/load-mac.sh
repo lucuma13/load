@@ -338,71 +338,34 @@ premiere_set_media_cache() {
   defaults write "$domain" "Media Cache" -dict-add FolderPath "${cache_dir%/}/"
 }
 
-# audacity_set_pref <cfg> <section> <key> <value> — set a key in Audacity's
-# audacity.cfg. Not a plist: it's a wxFileConfig INI, so `defaults` can't touch
-# it and the org.audacityteam.audacity.plist next to it holds only window state.
-#
-# Creates whatever is missing — the file, the [section], the key — because a
-# freshly installed Audacity has no cfg at all (it writes one on first quit),
-# and a cfg it does write omits every key still at its default. Partial files
-# are fine: wxFileConfig merges what's there over the built-in defaults.
-#
-# Section-scoped by design. Keys are only unique within their section, so the
-# key is matched between this section's header and the next one, never
-# file-wide. Values go through /e so regex specials in them stay literal.
-#
-# The key match is [^\r\n]* rather than .* because a migrated CRLF cfg might
-# keep its CR: perl's `.` matches a bare \r, and `.*$` would eat it.
-audacity_set_pref() {
-  local cfg="$1"
-  mkdir -p "$(dirname "$cfg")" || return 1
-  [ -f "$cfg" ] || : >"$cfg"
-  ASP_SECTION="$2" ASP_KEY="$3" ASP_VAL="$4" perl -i -0777 -pe '
-    my $sec  = quotemeta $ENV{ASP_SECTION};
-    my $key  = quotemeta $ENV{ASP_KEY};
-    my $line = $ENV{ASP_KEY} . "=" . $ENV{ASP_VAL};
-    # Follow the file s own endings for any line we add; default to LF, which is
-    # what Audacity writes here on macOS.
-    my $nl = /\r\n/ ? "\r\n" : "\n";
-    # \r?$ and \r?\n throughout: on a CRLF cfg a bare ^\[GUI\]$ never matches
-    # (the \r sits between "]" and the \n), and the section would be appended a
-    # second time instead of edited.
-    if (/^\[$sec\]\r?$/m) {
-      s{(^\[$sec\]\r?\n)((?:(?!^\[).*\n)*)}{
-        my ($hdr, $body) = ($1, $2);
-        $body =~ s{^$key=[^\r\n]*}{$line}me or $body = $line . $nl . $body;
-        $hdr . $body;
-      }me;
-    } else {
-      $_ .= $nl unless $_ eq "" || /\n$/;
-      $_ .= "[$ENV{ASP_SECTION}]" . $nl . $line . $nl;
-    }
-  ' "$cfg"
-}
+# Audacity 4's preferences domain.
+AUDACITY_DOMAIN="org.audacityteam.Audacity4"
 
-# Audacity's settings file
-AUDACITY_CFG="$HOME/Library/Application Support/audacity/audacity.cfg"
-
-# The Audacity settings we enforce:
-#   GUI/DefaultViewModeChoiceNew  default track view mode set to spectrogram
-#   Spectrum/MaxFreq              set max frequency of that spectogram
+# The Audacity settings we enforce, as plist Key=Value pairs — every one an
+# integer, which is how apply_audacity_prefs writes them:
+#   spectrogram.maxFreq  top of the spectrogram's frequency range; Audacity's
+#                        20 kHz default crops the display well below what
+#                        96/192 kHz recordings carry
 AUDACITY_PREFS=(
-  "GUI/DefaultViewModeChoiceNew=Spectrogram"
-  "Spectrum/MaxFreq=48000"
+  "spectrogram.maxFreq=48000"
 )
 
 # audacity_present — is Audacity on this machine? A function rather than an
 # inline test because preflight and apply_audacity_prefs must agree.
-audacity_present() { [ -d "/Applications/Audacity.app" ]; }
+audacity_present() { [ -d "/Applications/Audacity 4.app" ]; }
 
-# audacity_applied — true once every AUDACITY_PREFS entry is in the cfg. Each
-# entry's tail past the section is already the exact "key=value" line, so it
-# greps as a whole line with no reformatting.
+# audacity_running — match case-insensitively since (v4's bundle executable is
+# lowercase "audacity", while v3's was "Audacity")
+audacity_running() { pgrep -ix audacity &>/dev/null; }
+
+# audacity_applied — true once every AUDACITY_PREFS entry is the domain's current
+# value. `defaults read` prints an integer back bare, so each entry's tail past
+# the "=" compares as-is. All-or-nothing: a domain carrying only some of the
+# settings is not applied.
 audacity_applied() {
-  [ -f "$AUDACITY_CFG" ] || return 1
   local pref
   for pref in "${AUDACITY_PREFS[@]}"; do
-    grep -qx "${pref#*/}" "$AUDACITY_CFG" || return 1
+    [ "$(defaults read "$AUDACITY_DOMAIN" "${pref%%=*}" 2>/dev/null)" = "${pref#*=}" ] || return 1
   done
 }
 
@@ -516,10 +479,10 @@ PREMIERE_RUNNING=false
 $PREMIERE_OK && pgrep "Adobe Premiere Pro" &>/dev/null 2>&1 && PREMIERE_RUNNING=true
 AUDACITY_OK=false
 audacity_present && AUDACITY_OK=true
-# Audacity rewrites audacity.cfg wholesale when it quits, so anything we write
-# while it's open is discarded on exit.
+# Audacity holds its settings in memory and syncs them out as it quits, so a
+# write it never read back can be undone on exit.
 AUDACITY_RUNNING=false
-$AUDACITY_OK && pgrep -x Audacity &>/dev/null 2>&1 && AUDACITY_RUNNING=true
+$AUDACITY_OK && audacity_running && AUDACITY_RUNNING=true
 BREW_OK=false
 # Homebrew is a single-user tool: its prefix is owned by whoever installed it.
 # On a shared Mac a standard user can't write to it (packages are already there
@@ -583,25 +546,24 @@ premiere_applied() {
 # luts_present — true once at least one LUT has been downloaded.
 luts_present() { ls "$WORKDIR/LUTs/"* >/dev/null 2>&1; }
 
-# apply_audacity_prefs — write every AUDACITY_PREFS entry into audacity.cfg.
+# apply_audacity_prefs — write every AUDACITY_PREFS entry into Audacity's
+# preferences domain.
 #
 # Deliberately re-checks for Audacity itself rather than reading the cached
 # AUDACITY_OK: it is called twice, and the second call happens after run_slow's
 # cask install.
 apply_audacity_prefs() {
   audacity_present || return 0
-  # Audacity rewrites the whole cfg when it quits, discarding anything we wrote
-  # while it was open.
-  if pgrep -x Audacity &>/dev/null 2>&1; then
+  # A write made while it is open can be undone when it quits — see
+  # AUDACITY_RUNNING.
+  if audacity_running; then
     echo "  ⚠️  Audacity is running — spectrogram settings not changed"
     return 0
   fi
-  local pref section entry
+  local pref
   for pref in "${AUDACITY_PREFS[@]}"; do
-    section="${pref%%/*}" # e.g. GUI
-    entry="${pref#*/}"    # e.g. DefaultViewModeChoiceNew=Spectrogram
-    audacity_set_pref "$AUDACITY_CFG" "$section" "${entry%%=*}" "${entry#*=}" ||
-      echo "  ⚠️  Audacity settings file could not be written — ${entry%%=*} not changed"
+    defaults write "$AUDACITY_DOMAIN" "${pref%%=*}" -int "${pref#*=}" ||
+      echo "  ⚠️  Audacity settings could not be written — ${pref%%=*} not changed"
   done
 }
 
@@ -664,7 +626,7 @@ checklist() {
     would_run "$premiere_line"
   fi
 
-  # Audacity — preferences (spectrogram track view).
+  # Audacity — preferences (spectrogram frequency range).
   local audacity_line="Audacity (preferences)"
   if ! $AUDACITY_OK; then
     would_skip "$audacity_line — not installed"
@@ -819,14 +781,13 @@ run_fast() {
   killall AppleSpell 2>/dev/null || true
   killall TextEdit 2>/dev/null || true
 
-  # Audacity — spectrogram track view and its frequency range. Catches an
-  # Audacity already on the machine (however it was installed), so it applies in
-  # every mode, --fast included. A fresh machine where our own --full run is
-  # what installs Audacity is handled by the second call in run_slow.
+  # Audacity — the spectrogram's frequency range. Catches an Audacity already on
+  # the machine (however it was installed), so it applies in every mode, --fast
+  # included. A fresh machine where our own --full run is what installs Audacity
+  # is handled by the second call in run_slow.
   #
-  # Safe on a never-launched Audacity that has no cfg yet: it writes one, and
-  # Audacity merges a partial hand-written cfg over its defaults and keeps our
-  # keys when it rewrites the file on quit (verified).
+  # Safe on a never-launched Audacity whose domain does not exist yet: the write
+  # creates it, and Audacity reads our key over its own default at startup.
   apply_audacity_prefs
 
   # Premiere Pro shortcuts, workspace & labels

@@ -287,17 +287,17 @@ function Set-ForcedPrefNode {
 }
 
 # Set-AudacityPref <cfg> <section> <key> <value> - set a key in Audacity's
-# audacity.cfg.
+# settings INI.
 #
 # Creates whatever is missing - the file, the [section], the key - because a
-# freshly installed Audacity has no cfg at all (it writes one on first quit),
-# and a cfg it does write omits every key still at its default. Partial files
-# are fine: wxFileConfig merges what's there over the built-in defaults.
+# freshly installed Audacity has no INI at all (Qt writes one out once a setting
+# changes), and one it does write omits every key still at its default. Partial
+# files are fine: QSettings merges what's there over Audacity's own defaults.
 #
-# EOL-preserving (this file is CRLF): wxFileConfig writes it through wxTextFile,
-# which uses the platform's native endings. The file's own first ending is
-# detected and reused for any line this function adds, and the match is `\r?\n`
-# throughout so a hand-edited mixed file still parses.
+# EOL-preserving (this file is CRLF): Qt writes the INI with the platform's
+# native endings. The file's own first ending is detected and reused for any
+# line this function adds, and the match is `\r?\n` throughout so a hand-edited
+# mixed file still parses.
 #
 # Byte-level read/write for the same reason as Set-PrefNode: it guarantees no
 # BOM is introduced. Windows PowerShell 5.1's `-Encoding UTF8` would add one,
@@ -1010,21 +1010,16 @@ $DISK_SLEEP_OFF_OK = [bool]$DISK_IDLE_KEY -and ((Get-RegValue $DISK_IDLE_KEY "AC
 # found however it got onto the machine - our own winget Audacity.Audacity, a
 # manual download, or the Muse Hub build.
 $AUDACITY_OK = Test-AppInstalled 'Audacity'
-# Audacity rewrites audacity.cfg wholesale when it quits, so anything written
-# while it is open is discarded on exit. Same reasoning as $PREMIERE_RUNNING.
+# Audacity holds its settings in memory and syncs them out as it quits, so a
+# write it never read back can be undone on exit. Same reasoning as $PREMIERE_RUNNING.
 $AUDACITY_RUNNING = $AUDACITY_OK -and ($null -ne (Get-Process -Name "Audacity" -ErrorAction SilentlyContinue))
 
-# Audacity's settings file.
-$AUDACITY_CFG = Join-Path $env:APPDATA "audacity\audacity.cfg"
+# Audacity 4's settings file.
+$AUDACITY_CFG = Join-Path $env:APPDATA "Audacity\Audacity4.ini"
 
-# The Audacity settings we enforce:
-#   GUI/DefaultViewModeChoiceNew  new tracks open as a spectrogram, not a waveform
-#   Spectrum/MaxFreq              top of the spectrogram's frequency range;
-#                                 Audacity's 20 kHz default crops the display
-#                                 well below what 96/192 kHz recordings carry
+# The Audacity settings we enforce.
 $AUDACITY_PREFS = @(
-    "GUI/DefaultViewModeChoiceNew=Spectrogram",
-    "Spectrum/MaxFreq=48000"
+    "spectrogram.maxFreq=48000"
 )
 
 # Premiere shortcut set + workspace we distribute
@@ -1134,26 +1129,26 @@ function Test-PremiereApplied {
 # dir.
 function Test-LutPresent { [bool](Get-ChildItem "$WorkDir\LUTs" -File -ErrorAction SilentlyContinue | Select-Object -First 1) }
 
-# Test-AudacityApplied - true once every $AUDACITY_PREFS entry is in the cfg.
+# Test-AudacityApplied - true once every $AUDACITY_PREFS entry is in the INI.
 # Each entry's tail past the section is already the exact "key=value" line, so
 # it is matched as a whole line with no reformatting.
 function Test-AudacityApplied {
     if (-not (Test-Path $AUDACITY_CFG)) { return $false }
     $content = Get-Content -LiteralPath $AUDACITY_CFG -Raw -Encoding UTF8
     foreach ($pref in $AUDACITY_PREFS) {
-        $line = $pref.Substring($pref.IndexOf('/') + 1)
+        $line = $pref.Substring($pref.IndexOf('.') + 1)
         if ($content -notmatch ("(?m)^" + [regex]::Escape($line) + "\r?$")) { return $false }
     }
     return $true
 }
 
-# Set-AudacityConfig - write every $AUDACITY_PREFS entry into audacity.cfg.
+# Set-AudacityConfig - write every $AUDACITY_PREFS entry into Audacity's INI.
 #
 # Deliberately re-checks for Audacity rather than reading the cached
 # $AUDACITY_OK: it is called twice, and the second call happens after the
 # elevated winget install.
 #
-# Runs in the NON-elevated process both times: the cfg lives under the invoking
+# Runs in the NON-elevated process both times: the INI lives under the invoking
 # user's %APPDATA%, so doing this inside the elevated batch would write it into
 # the admin's profile instead.
 function Set-AudacityConfig {
@@ -1165,9 +1160,9 @@ function Set-AudacityConfig {
         return
     }
     foreach ($pref in $AUDACITY_PREFS) {
-        $slash = $pref.IndexOf('/')
-        $section = $pref.Substring(0, $slash)          # e.g. GUI
-        $entry = $pref.Substring($slash + 1)           # e.g. DefaultViewModeChoiceNew=Spectrogram
+        $dot = $pref.IndexOf('.')
+        $section = $pref.Substring(0, $dot)            # e.g. spectrogram
+        $entry = $pref.Substring($dot + 1)             # e.g. maxFreq=48000
         $eq = $entry.IndexOf('=')
         $key = $entry.Substring(0, $eq)
         if (-not (Set-AudacityPref -cfg $AUDACITY_CFG -section $section -key $key -value $entry.Substring($eq + 1))) {
@@ -1216,12 +1211,12 @@ function Show-Checklist {
     elseif ((Test-PremiereApplied) -and (Test-LutPresent)) { Done "Premiere Pro (shortcuts, workspace, preferences, LUTs)" }
     else { WouldRun "Premiere Pro (shortcuts, workspace, preferences, LUTs)" }
 
-    # Audacity - spectrogram track view and its frequency range.
-    if (-not $AUDACITY_OK) { Skipped  "Audacity (track view, frequency range) - Audacity not installed" }
-    elseif ($AUDACITY_RUNNING) { Skipped  "Audacity (track view, frequency range) - Audacity is open" }
-    elseif ($CLM) { Skipped  "Audacity (track view, frequency range) - Not allowed under Constrained Language Mode" }
-    elseif (Test-AudacityApplied) { Done "Audacity (track view, frequency range)" }
-    else { WouldRun "Audacity (track view, frequency range)" }
+    # Audacity - the spectrogram's frequency range.
+    if (-not $AUDACITY_OK) { Skipped  "Audacity (frequency range) - Audacity not installed" }
+    elseif ($AUDACITY_RUNNING) { Skipped  "Audacity (frequency range) - Audacity is open" }
+    elseif ($CLM) { Skipped  "Audacity (frequency range) - Not allowed under Constrained Language Mode" }
+    elseif (Test-AudacityApplied) { Done "Audacity (frequency range)" }
+    else { WouldRun "Audacity (frequency range)" }
 
     # Activate AHK macros - applied whenever AutoHotkey is present. In --fast we
     # might only have a pre-installed AutoHotkey to work with (installing it is
@@ -1285,14 +1280,13 @@ function Show-Checklist {
 # --fast runs Invoke-FastPass only and --full runs both.
 
 function Invoke-FastPass {
-    # Audacity - spectrogram track view and its frequency range. Catches an
-    # Audacity already on the machine (however it was installed), so it applies
-    # in every mode, --fast included. A fresh machine where our own --full run
-    # is what installs Audacity is handled by the second call in Invoke-SlowPass.
+    # Audacity - the spectrogram's frequency range. Catches an Audacity already
+    # on the machine (however it was installed), so it applies in every mode,
+    # --fast included. A fresh machine where our own --full run is what installs
+    # Audacity is handled by the second call in Invoke-SlowPass.
     #
-    # Safe on a never-launched Audacity with no cfg yet: it writes one, and
-    # Audacity merges a partial hand-written cfg over its defaults and keeps our
-    # keys when it rewrites the file on quit.
+    # Safe on a never-launched Audacity with no INI yet: it writes one, and
+    # Audacity reads our key over its own default at startup.
     Set-AudacityConfig
 
     # Premiere Pro shortcuts, workspace & LUTs

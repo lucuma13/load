@@ -1888,9 +1888,9 @@ Describe "Find-UvExe" -Skip:(-not $IsWindowsHost) {
     }
 }
 
-# Set-AudacityPref is the engine behind the Audacity settings. audacity.cfg is a
-# wxFileConfig INI, so it needs its own section/key handling - these cover the
-# shapes it meets in the wild.
+# Set-AudacityPref is the engine behind the Audacity settings. Audacity 4 keeps
+# them in a QSettings INI, so it needs its own section/key handling - these cover
+# the shapes it meets in the wild.
 Describe "Set-AudacityPref" {
     BeforeAll {
         $env:LOAD_LIB = "1"
@@ -1903,86 +1903,86 @@ Describe "Set-AudacityPref" {
         function script:Write-Cfg($path, $text) { [System.IO.File]::WriteAllText($path, $text, (New-Object System.Text.UTF8Encoding $false)) }
         function script:Read-Cfg($path) { [System.IO.File]::ReadAllText($path, (New-Object System.Text.UTF8Encoding $false)) }
     }
-    BeforeEach { $script:cfg = Join-Path $TestDrive "audacity.cfg" }
+    BeforeEach { $script:cfg = Join-Path $TestDrive "Audacity4.ini" }
 
     It "replaces an existing key in place" {
-        Write-Cfg $cfg "PrefsVersion=1.1.1r1`r`n[GUI]`r`nTheme=classic`r`nDefaultViewModeChoiceNew=Waveform`r`n[Tracks]`r`nAutoScroll=1`r`n"
-        Set-AudacityPref $cfg 'GUI' 'DefaultViewModeChoiceNew' 'Spectrogram' | Should -BeTrue
-        Read-Cfg $cfg | Should -Be "PrefsVersion=1.1.1r1`r`n[GUI]`r`nTheme=classic`r`nDefaultViewModeChoiceNew=Spectrogram`r`n[Tracks]`r`nAutoScroll=1`r`n"
+        Write-Cfg $cfg "[general]`r`ntheme=classic`r`n[spectrogram]`r`nmaxFreq=20000`r`n[projectscene]`r`nclipStyle=1`r`n"
+        Set-AudacityPref $cfg 'spectrogram' 'maxFreq' '48000' | Should -BeTrue
+        Read-Cfg $cfg | Should -Be "[general]`r`ntheme=classic`r`n[spectrogram]`r`nmaxFreq=48000`r`n[projectscene]`r`nclipStyle=1`r`n"
     }
 
     It "adds the key when the section exists without it" {
-        Write-Cfg $cfg "[GUI]`r`nTheme=classic`r`n[Tracks]`r`nAutoScroll=1`r`n"
-        Set-AudacityPref $cfg 'GUI' 'DefaultViewModeChoiceNew' 'Spectrogram' | Should -BeTrue
-        Read-Cfg $cfg | Should -Be "[GUI]`r`nDefaultViewModeChoiceNew=Spectrogram`r`nTheme=classic`r`n[Tracks]`r`nAutoScroll=1`r`n"
+        Write-Cfg $cfg "[spectrogram]`r`nscale=2`r`n[projectscene]`r`nclipStyle=1`r`n"
+        Set-AudacityPref $cfg 'spectrogram' 'maxFreq' '48000' | Should -BeTrue
+        Read-Cfg $cfg | Should -Be "[spectrogram]`r`nmaxFreq=48000`r`nscale=2`r`n[projectscene]`r`nclipStyle=1`r`n"
     }
 
     It "appends the section when it is absent" {
-        Write-Cfg $cfg "PrefsVersion=1.1.1r1`r`n[Tracks]`r`nAutoScroll=1`r`n"
-        Set-AudacityPref $cfg 'Spectrum' 'MaxFreq' '48000' | Should -BeTrue
-        Read-Cfg $cfg | Should -Be "PrefsVersion=1.1.1r1`r`n[Tracks]`r`nAutoScroll=1`r`n[Spectrum]`r`nMaxFreq=48000`r`n"
+        Write-Cfg $cfg "[general]`r`ntheme=classic`r`n[projectscene]`r`nclipStyle=1`r`n"
+        Set-AudacityPref $cfg 'spectrogram' 'maxFreq' '48000' | Should -BeTrue
+        Read-Cfg $cfg | Should -Be "[general]`r`ntheme=classic`r`n[projectscene]`r`nclipStyle=1`r`n[spectrogram]`r`nmaxFreq=48000`r`n"
     }
 
-    # The fresh-install path: Audacity writes no cfg (and no %APPDATA%\audacity)
-    # until it first quits, so the helper must author both or the setting would
-    # only ever land on a second run of the installer.
+    # The fresh-install path: Audacity writes no INI (and no %APPDATA%\Audacity)
+    # until a setting first changes, so the helper must author both or the
+    # setting would only ever land on a second run of the installer.
     It "creates the file and its directory when neither exists" {
-        $fresh = Join-Path $TestDrive "fresh\audacity\audacity.cfg"
-        Set-AudacityPref $fresh 'GUI' 'DefaultViewModeChoiceNew' 'Spectrogram' | Should -BeTrue
-        Read-Cfg $fresh | Should -Be "[GUI]`r`nDefaultViewModeChoiceNew=Spectrogram`r`n"
+        $fresh = Join-Path $TestDrive "fresh\Audacity\Audacity4.ini"
+        Set-AudacityPref $fresh 'spectrogram' 'maxFreq' '48000' | Should -BeTrue
+        Read-Cfg $fresh | Should -Be "[spectrogram]`r`nmaxFreq=48000`r`n"
     }
 
-    # Keys are only unique within a section - [Tracks] and [GUI] can both hold a
-    # DefaultViewModeChoiceNew - so a file-wide match would write the wrong one.
+    # Keys are only unique within a section - [spectrogram] and [projectscene]
+    # can both hold a maxFreq - so a file-wide match would write the wrong one.
     It "only edits the named section" {
-        Write-Cfg $cfg "[Tracks]`r`nDefaultViewModeChoiceNew=Waveform`r`n[GUI]`r`nDefaultViewModeChoiceNew=Waveform`r`n"
-        Set-AudacityPref $cfg 'GUI' 'DefaultViewModeChoiceNew' 'Spectrogram' | Should -BeTrue
-        Read-Cfg $cfg | Should -Be "[Tracks]`r`nDefaultViewModeChoiceNew=Waveform`r`n[GUI]`r`nDefaultViewModeChoiceNew=Spectrogram`r`n"
+        Write-Cfg $cfg "[projectscene]`r`nmaxFreq=20000`r`n[spectrogram]`r`nmaxFreq=20000`r`n"
+        Set-AudacityPref $cfg 'spectrogram' 'maxFreq' '48000' | Should -BeTrue
+        Read-Cfg $cfg | Should -Be "[projectscene]`r`nmaxFreq=20000`r`n[spectrogram]`r`nmaxFreq=48000`r`n"
     }
 
-    # Audacity writes this file CRLF on Windows and LF on macOS (wxTextFile uses
-    # native endings). A normalising rewrite is what would silently churn every
-    # line of the user's cfg, so both shapes must survive an edit untouched.
+    # Qt writes this file CRLF on Windows and LF on macOS. A normalising rewrite
+    # is what would silently churn every line of the user's settings, so both
+    # shapes must survive an edit untouched.
     It "preserves CRLF endings" {
-        Write-Cfg $cfg "[GUI]`r`nTheme=classic`r`n"
-        Set-AudacityPref $cfg 'GUI' 'DefaultViewModeChoiceNew' 'Spectrogram' | Should -BeTrue
+        Write-Cfg $cfg "[spectrogram]`r`nscale=2`r`n"
+        Set-AudacityPref $cfg 'spectrogram' 'maxFreq' '48000' | Should -BeTrue
         $out = Read-Cfg $cfg
-        $out | Should -Be "[GUI]`r`nDefaultViewModeChoiceNew=Spectrogram`r`nTheme=classic`r`n"
+        $out | Should -Be "[spectrogram]`r`nmaxFreq=48000`r`nscale=2`r`n"
         ([regex]::Matches($out, "(?<!`r)`n")).Count | Should -Be 0
     }
 
     It "preserves LF endings" {
-        Write-Cfg $cfg "[GUI]`nTheme=classic`n"
-        Set-AudacityPref $cfg 'GUI' 'DefaultViewModeChoiceNew' 'Spectrogram' | Should -BeTrue
+        Write-Cfg $cfg "[spectrogram]`nscale=2`n"
+        Set-AudacityPref $cfg 'spectrogram' 'maxFreq' '48000' | Should -BeTrue
         $out = Read-Cfg $cfg
-        $out | Should -Be "[GUI]`nDefaultViewModeChoiceNew=Spectrogram`nTheme=classic`n"
+        $out | Should -Be "[spectrogram]`nmaxFreq=48000`nscale=2`n"
         $out | Should -Not -Match "`r"
     }
 
     It "is idempotent" {
-        Write-Cfg $cfg "PrefsVersion=1.1.1r1`r`n[GUI]`r`nTheme=classic`r`n"
-        Set-AudacityPref $cfg 'GUI' 'DefaultViewModeChoiceNew' 'Spectrogram' | Out-Null
+        Write-Cfg $cfg "[general]`r`ntheme=classic`r`n[spectrogram]`r`nscale=2`r`n"
+        Set-AudacityPref $cfg 'spectrogram' 'maxFreq' '48000' | Out-Null
         $first = Read-Cfg $cfg
-        Set-AudacityPref $cfg 'GUI' 'DefaultViewModeChoiceNew' 'Spectrogram' | Out-Null
+        Set-AudacityPref $cfg 'spectrogram' 'maxFreq' '48000' | Out-Null
         Read-Cfg $cfg | Should -Be $first
     }
 
     # Windows PowerShell 5.1's `-Encoding UTF8` writes a BOM, which would glue
-    # itself to the first key name in the file. Set-AudacityPref goes byte-level
-    # precisely to avoid that, so pin it.
+    # itself to the first section header in the file. Set-AudacityPref goes
+    # byte-level precisely to avoid that, so pin it.
     It "introduces no BOM" {
-        Set-AudacityPref $cfg 'GUI' 'DefaultViewModeChoiceNew' 'Spectrogram' | Out-Null
+        Set-AudacityPref $cfg 'spectrogram' 'maxFreq' '48000' | Out-Null
         $bytes = [System.IO.File]::ReadAllBytes($cfg)
         @($bytes[0], $bytes[1], $bytes[2]) | Should -Not -Be @(0xEF, 0xBB, 0xBF)
     }
 
     # The two platform scripts must enforce the same Audacity settings; the whole
-    # point of the shared "/Section/Key=Value" shape is that the lists can be
+    # point of the shared "Section.Key=Value" shape is that the lists can be
     # compared verbatim. Guards against one side being edited alone.
     It "enforces the same prefs as load-mac.sh" {
-        $win = Select-String -Path "$PSScriptRoot\..\src\load-win.ps1" -Pattern '^\s*"([A-Za-z]+/[A-Za-z]+=[^"]+)"' |
+        $win = Select-String -Path "$PSScriptRoot\..\src\load-win.ps1" -Pattern '^\s*"([A-Za-z]+\.[A-Za-z]+=[^"]+)"' |
             ForEach-Object { $_.Matches[0].Groups[1].Value }
-        $mac = Select-String -Path "$PSScriptRoot\..\src\load-mac.sh" -Pattern '^\s*"([A-Za-z]+/[A-Za-z]+=[^"]+)"' |
+        $mac = Select-String -Path "$PSScriptRoot\..\src\load-mac.sh" -Pattern '^\s*"([A-Za-z]+\.[A-Za-z]+=[^"]+)"' |
             ForEach-Object { $_.Matches[0].Groups[1].Value }
         $win | Should -Not -BeNullOrEmpty
         ($win -join ',') | Should -Be ($mac -join ',')
