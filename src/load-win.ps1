@@ -871,7 +871,7 @@ $PORTABLE_FALLBACK_PKGS = @("VideoLAN.VLC", "Audacity.Audacity")
 # machine-wide install would never be retried once admin becomes available.
 $MACHINE_EXE_PATH = @{
     "VideoLAN.VLC"      = "$(Get-ProgramFiles64)\VideoLAN\VLC\vlc.exe"
-    "Audacity.Audacity" = "$(Get-ProgramFiles64)\Audacity\Audacity.exe"
+    "Audacity.Audacity" = "$(Get-ProgramFiles64)\Audacity 4\bin\Audacity4.exe"
 }
 
 # Friendly display names for the winget ids (uv tools are already friendly).
@@ -1012,7 +1012,7 @@ $DISK_SLEEP_OFF_OK = [bool]$DISK_IDLE_KEY -and ((Get-RegValue $DISK_IDLE_KEY "AC
 $AUDACITY_OK = Test-AppInstalled 'Audacity'
 # Audacity holds its settings in memory and syncs them out as it quits, so a
 # write it never read back can be undone on exit. Same reasoning as $PREMIERE_RUNNING.
-$AUDACITY_RUNNING = $AUDACITY_OK -and ($null -ne (Get-Process -Name "Audacity" -ErrorAction SilentlyContinue))
+$AUDACITY_RUNNING = $AUDACITY_OK -and ($null -ne (Get-Process -Name "Audacity*" -ErrorAction SilentlyContinue))
 
 # Audacity 4's settings file.
 $AUDACITY_CFG = Join-Path $env:APPDATA "Audacity\Audacity4.ini"
@@ -1155,7 +1155,7 @@ function Set-AudacityConfig {
     if ($CLM) { return }   # Set-AudacityPref needs .NET byte IO; see its header
     # Re-checked rather than reading $AUDACITY_OK - see the header.
     if (-not (Test-AppInstalled 'Audacity')) { return }
-    if ($null -ne (Get-Process -Name "Audacity" -ErrorAction SilentlyContinue)) {
+    if ($null -ne (Get-Process -Name "Audacity*" -ErrorAction SilentlyContinue)) {
         Write-Host "  [warn] Audacity is running - spectrogram settings not changed"
         return
     }
