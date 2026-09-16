@@ -1055,8 +1055,15 @@ plistlib.dump(p,open(path,'wb'))
   # just prints a note and the run continues.
   if $DO_USER && command -v uvx &>/dev/null; then
     osascript -e 'tell application "Finder" to quit' 2>/dev/null || true
-    sleep 2
-    uvx --from ds-store python3 - <<'PY' 2>/dev/null || echo "  ⚠️  Downloads sort skipped (couldn't update .DS_Store)"
+    # Wait for Finder to actually exit (it flushes .DS_Store on the way out).
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      pgrep -xq Finder || break
+      sleep 1
+    done
+    if pgrep -xq Finder; then
+      echo "  ⚠️  Downloads sort skipped (Finder would not quit)"
+    else
+      uvx --from ds-store python3 - <<'PY' 2>/dev/null || echo "  ⚠️  Downloads sort skipped (couldn't update .DS_Store)"
 import os, plistlib
 import ds_store
 
@@ -1111,6 +1118,7 @@ except Exception:
     except Exception as ex2:
         print("  ⚠️  Downloads sort skipped:", ex2)
 PY
+    fi
     sleep 1
     open -a Finder 2>/dev/null || true
   fi
