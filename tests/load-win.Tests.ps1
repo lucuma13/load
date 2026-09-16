@@ -168,13 +168,16 @@ Describe "Plugin download links" -Tag 'Live' {
         @{ Name = 'Flicker Free'; Url = 'https://www.digitalanarchy.com/downloads/flickerfree_229_AE.zip' }
     )
 
+    # Retries cover a 429 from a host rate-limiting the CI runners; pwsh backs
+    # off per Retry-After when one is sent.
     It "<Name> link is live" -ForEach $links {
+        $retry = @{ MaximumRetryCount = 3; RetryIntervalSec = 5 }
         try {
-            $resp = Invoke-WebRequest -Uri $Url -Method Head -MaximumRedirection 5 -UseBasicParsing -TimeoutSec 30
+            $resp = Invoke-WebRequest -Uri $Url -Method Head -MaximumRedirection 5 -UseBasicParsing -TimeoutSec 30 @retry
         }
         catch {
             # Some servers reject HEAD - fall back to a 1-byte ranged GET.
-            $resp = Invoke-WebRequest -Uri $Url -Headers @{ Range = 'bytes=0-0' } -MaximumRedirection 5 -UseBasicParsing -TimeoutSec 30
+            $resp = Invoke-WebRequest -Uri $Url -Headers @{ Range = 'bytes=0-0' } -MaximumRedirection 5 -UseBasicParsing -TimeoutSec 30 @retry
         }
         [int]$resp.StatusCode | Should -BeIn @(200, 206)
     }

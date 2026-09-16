@@ -472,12 +472,13 @@ strip_forced() {
 # live. Skip them on an offline run with:  bats --filter-tags '!live' tests/
 #
 # HEAD first, falling back to a 1-byte ranged GET for servers that reject HEAD;
-# redirects are followed and 200/206 are both accepted.
+# redirects are followed and 200/206 are both accepted. --retry rides out a 429
+# from a host rate-limiting the CI runners (Digital Anarchy does).
 link_status() {
   local url="$1" code
-  code="$(curl -sS -o /dev/null -w '%{http_code}' -I -L --max-time 30 "$url")"
+  code="$(curl -sS -o /dev/null -w '%{http_code}' -I -L --max-time 30 --retry 3 --retry-delay 5 "$url")"
   if [ "$code" != 200 ] && [ "$code" != 206 ]; then
-    code="$(curl -sS -o /dev/null -w '%{http_code}' -H 'Range: bytes=0-0' -L --max-time 30 "$url")"
+    code="$(curl -sS -o /dev/null -w '%{http_code}' -H 'Range: bytes=0-0' -L --max-time 30 --retry 3 --retry-delay 5 "$url")"
   fi
   printf '%s' "$code"
 }
