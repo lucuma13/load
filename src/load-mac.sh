@@ -770,7 +770,11 @@ run_fast() {
   if pmset -g batt | grep -q "InternalBattery"; then # Laptops only
     defaults write com.apple.controlcenter BatteryShowPercentage -bool true
   fi
+  defaults -currentHost write com.apple.Spotlight MenuItemHidden -int 1
+  defaults -currentHost write com.apple.controlcenter Sound -int 18
+  defaults -currentHost write com.apple.controlcenter Bluetooth -int 2
   killall Dock
+  killall ControlCenter 2>/dev/null || true
 
   # Keyboard layout — "ABC – Extended".
   local abc_ext='<dict><key>InputSourceKind</key><string>Keyboard Layout</string><key>KeyboardLayout ID</key><integer>-2</integer><key>KeyboardLayout Name</key><string>US Extended</string></dict>'
