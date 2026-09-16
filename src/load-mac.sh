@@ -909,9 +909,12 @@ run_slow() {
   fi
 
   # Power settings — never put drives to sleep, and wake for network access.
+  # pmset warns that disksleep 0 with a non-zero system sleep "may not behave as
+  # expected" for the intended shape (drives stay up while the Mac is
+  # awake, and sleep with it), so the advisory is dropped from the output.
   if $DO_MACHINE; then
-    sudo pmset -a disksleep 0
-    sudo pmset -a womp 1
+    sudo pmset -a disksleep 0 womp 1 2>&1 |
+      grep -v -e 'Idle sleep timings' -e 'Disk sleep should be non-zero' || true
   fi
 
   # Finder "Calculate all sizes" — a nested plist key defaults(1) can't reach,
