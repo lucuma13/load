@@ -748,7 +748,18 @@ run_fast() {
   # System preferences
   defaults write NSGlobalDomain KeyRepeat -int 2
   defaults write NSGlobalDomain InitialKeyRepeat -int 15
-  defaults write NSGlobalDomain com.apple.trackpad.scaling -float 2
+  defaults write NSGlobalDomain com.apple.trackpad.scaling -float 2.5
+  defaults write com.apple.AppleMultitouchTrackpad Clicking -bool true
+  defaults write com.apple.driver.AppleBluetoothMultitouch.trackpad Clicking -bool true
+  defaults -currentHost write NSGlobalDomain com.apple.mouse.tapBehavior -int 1
+  defaults write com.apple.AppleMultitouchTrackpad TrackpadFourFingerVertSwipeGesture -int 2
+  defaults write com.apple.AppleMultitouchTrackpad TrackpadThreeFingerVertSwipeGesture -int 0
+  defaults write com.apple.AppleMultitouchTrackpad TrackpadFourFingerHorizSwipeGesture -int 2
+  defaults write com.apple.AppleMultitouchTrackpad TrackpadThreeFingerHorizSwipeGesture -int 0
+  defaults write com.apple.driver.AppleBluetoothMultitouch.trackpad TrackpadFourFingerVertSwipeGesture -int 2
+  defaults write com.apple.driver.AppleBluetoothMultitouch.trackpad TrackpadThreeFingerVertSwipeGesture -int 0
+  defaults write com.apple.driver.AppleBluetoothMultitouch.trackpad TrackpadFourFingerHorizSwipeGesture -int 2
+  defaults write com.apple.driver.AppleBluetoothMultitouch.trackpad TrackpadThreeFingerHorizSwipeGesture -int 0
   defaults write com.apple.dock autohide -bool true
   defaults write com.apple.dock magnification -bool false
   defaults write com.apple.dock mru-spaces -bool false
@@ -760,11 +771,7 @@ run_fast() {
   fi
   killall Dock
 
-  # Keyboard layout — "ABC – Extended" (stored under its old name, "US
-  # Extended", layout ID -2). Added to the enabled list if missing and made the
-  # selected layout; other layouts stay enabled. The selected list also carries
-  # the press-and-hold accent popover, as stock macOS has it. Applies at next
-  # login.
+  # Keyboard layout — "ABC – Extended".
   local abc_ext='<dict><key>InputSourceKind</key><string>Keyboard Layout</string><key>KeyboardLayout ID</key><integer>-2</integer><key>KeyboardLayout Name</key><string>US Extended</string></dict>'
   local press_hold='<dict><key>Bundle ID</key><string>com.apple.PressAndHold</string><key>InputSourceKind</key><string>Non Keyboard Input Method</string></dict>'
   defaults read com.apple.HIToolbox AppleEnabledInputSources 2>/dev/null | grep -q '"KeyboardLayout ID" = "-2"' ||
