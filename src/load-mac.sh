@@ -1080,7 +1080,6 @@ except Exception:
         if os.path.exists(home):
             os.remove(home)
         apply_downloads_sort('w+')
-        print("  ⚠️  ~/.DS_Store was rebuilt from scratch (existing Finder view state was too bloated to edit in place)")
     except Exception as ex2:
         print("  ⚠️  Downloads sort skipped:", ex2)
 PY
