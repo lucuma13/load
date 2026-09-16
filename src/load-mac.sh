@@ -571,7 +571,8 @@ apply_audacity_prefs() {
 # place (probe a representative key, mirroring the Windows keyboard check).
 prefs_applied() {
   [ "$(defaults read NSGlobalDomain KeyRepeat 2>/dev/null)" = "2" ] &&
-    [ "$(defaults read com.apple.dock autohide 2>/dev/null)" = "1" ]
+    [ "$(defaults read com.apple.dock autohide 2>/dev/null)" = "1" ] &&
+    [ "$(defaults read com.apple.HIToolbox AppleCurrentKeyboardLayoutInputSourceID 2>/dev/null)" = "com.apple.keylayout.USExtended" ]
 }
 
 # Never put drives to sleep
@@ -758,6 +759,18 @@ run_fast() {
     defaults write com.apple.controlcenter BatteryShowPercentage -bool true
   fi
   killall Dock
+
+  # Keyboard layout — "ABC – Extended" (stored under its old name, "US
+  # Extended", layout ID -2). Added to the enabled list if missing and made the
+  # selected layout; other layouts stay enabled. The selected list also carries
+  # the press-and-hold accent popover, as stock macOS has it. Applies at next
+  # login.
+  local abc_ext='<dict><key>InputSourceKind</key><string>Keyboard Layout</string><key>KeyboardLayout ID</key><integer>-2</integer><key>KeyboardLayout Name</key><string>US Extended</string></dict>'
+  local press_hold='<dict><key>Bundle ID</key><string>com.apple.PressAndHold</string><key>InputSourceKind</key><string>Non Keyboard Input Method</string></dict>'
+  defaults read com.apple.HIToolbox AppleEnabledInputSources 2>/dev/null | grep -q '"KeyboardLayout ID" = "-2"' ||
+    defaults write com.apple.HIToolbox AppleEnabledInputSources -array-add "$abc_ext"
+  defaults write com.apple.HIToolbox AppleSelectedInputSources -array "$press_hold" "$abc_ext"
+  defaults write com.apple.HIToolbox AppleCurrentKeyboardLayoutInputSourceID -string "com.apple.keylayout.USExtended"
 
   # Finder preferences — the top-level keys. The nested "Calculate all sizes"
   # toggle needs python3 (Command Line Tools), so it lives in run_slow.
