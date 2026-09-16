@@ -575,10 +575,10 @@ prefs_applied() {
     [ "$(defaults read com.apple.HIToolbox AppleCurrentKeyboardLayoutInputSourceID 2>/dev/null)" = "com.apple.keylayout.USExtended" ]
 }
 
-# Never put drives to sleep
-drives_stay_awake() {
+# Power settings
+power_settings_applied() {
   [ "$(pmset -g custom 2>/dev/null |
-    awk '/disksleep/{n++; $2==0 && z++} END{print (n && n==z) ? "y" : "n"}')" = y ]
+    awk '/disksleep/{n++; $2==0 && z++} /womp/{n++; $2==1 && z++} END{print (n && n==z) ? "y" : "n"}')" = y ]
 }
 
 # Premiere plugins already on the machine (detected by install path). Mister
@@ -646,13 +646,14 @@ checklist() {
     would_run "System, Finder & TextEdit preferences"
   fi
 
-  # Never put drives to sleep
-  if drives_stay_awake; then
-    already_done "Keep drives spun up (never sleep)"
+  # Power settings
+  local power_line="Power (drives never sleep, wake for network access)"
+  if power_settings_applied; then
+    already_done "$power_line"
   elif $FAST; then
-    would_skip "Keep drives spun up (never sleep) (--fast)"
+    would_skip "$power_line (--fast)"
   else
-    would_run "Keep drives spun up (never sleep)"
+    would_run "$power_line"
   fi
 
   # Pro Video Formats
@@ -903,10 +904,10 @@ run_slow() {
     done
   fi
 
-  # Never put drives to sleep. A system-wide power setting, so it needs root and
-  # runs here.
+  # Power settings — never put drives to sleep, and wake for network access.
   if $DO_MACHINE; then
     sudo pmset -a disksleep 0
+    sudo pmset -a womp 1
   fi
 
   # Finder "Calculate all sizes" — a nested plist key defaults(1) can't reach,
