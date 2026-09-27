@@ -1065,7 +1065,7 @@ plistlib.dump(p,open(path,'wb'))
       echo "  ⚠️  Downloads sort skipped (Finder would not quit)"
     else
       uvx --from ds-store python3 - <<'PY' 2>/dev/null || echo "  ⚠️  Downloads sort skipped (couldn't update .DS_Store)"
-import os, plistlib
+import os, plistlib, tempfile
 import ds_store
 
 home = os.path.expanduser('~/.DS_Store')
@@ -1084,38 +1084,70 @@ TEMPLATE = {
         {'identifier': 'kind',         'visible': True, 'width': 115, 'ascending': True},
     ],
 }
-def apply_downloads_sort(mode):
-    with ds_store.DSStore.open(home, mode) as d:
-        ent = {e.code: e for e in d if e.filename == 'Downloads'} if mode == 'r+' else {}
-        # View style -> list
-        if b'vstl' in ent:
-            d.delete('Downloads', b'vstl')
-        d.insert(ds_store.DSStoreEntry('Downloads', b'vstl', b'type', b'Nlsv'))
-        # Sort -> Date Added, newest first
-        pl = plistlib.loads(bytes(ent[b'lsvC'].value)) if b'lsvC' in ent else dict(TEMPLATE)
-        pl['sortColumn'] = 'dateAdded'
-        for c in pl.get('columns', []):
-            if c.get('identifier') == 'dateAdded':
-                c['visible'] = True
-                c['ascending'] = False   # newest first
-        if b'lsvC' in ent:
-            d.delete('Downloads', b'lsvC')
-        d.insert(ds_store.DSStoreEntry('Downloads', b'lsvC', b'blob',
-                                       plistlib.dumps(pl, fmt=plistlib.FMT_BINARY)))
-
-try:
-    apply_downloads_sort('r+' if os.path.exists(home) else 'w+')
-except Exception:
-    # A heavily-used ~/.DS_Store can pack a B-tree node right up to its 4KB page
-    # limit; inserting our entry there can overflow a known bug in the ds-store
-    # library (store.py _split -> _split2 returns None, unhandled). ~/.DS_Store
-    # only caches Finder view state (icon positions, window sizes, per-folder
-    # view options) that Finder regenerates on demand, so recover by dropping it
-    # and rebuilding fresh rather than trying to repair the existing B-tree.
+def read_entries():
+    # Snapshot every record of the existing store. An unreadable store is
+    # treated as empty — it only caches view state Finder regenerates.
+    if not os.path.exists(home):
+        return []
     try:
-        if os.path.exists(home):
-            os.remove(home)
-        apply_downloads_sort('w+')
+        with ds_store.DSStore.open(home, 'r') as d:
+            return list(d)
+    except Exception:
+        return []
+
+def downloads_entries(old):
+    # Sort -> Date Added, newest first. An existing lsvC is edited so the
+    # user's columns/widths survive.
+    pl = None
+    if b'lsvC' in old:
+        try:
+            pl = plistlib.loads(bytes(old[b'lsvC'].value))
+        except Exception:
+            pl = None
+    if not isinstance(pl, dict):
+        pl = dict(TEMPLATE)
+    pl['sortColumn'] = 'dateAdded'
+    for c in pl.get('columns', []):
+        if c.get('identifier') == 'dateAdded':
+            c['visible'] = True
+            c['ascending'] = False   # newest first
+    return [
+        ds_store.DSStoreEntry('Downloads', b'vstl', b'type', b'Nlsv'),   # list view
+        ds_store.DSStoreEntry('Downloads', b'lsvC', b'blob',
+                              plistlib.dumps(pl, fmt=plistlib.FMT_BINARY)),
+    ]
+
+def write_store(entries):
+    fd, tmp = tempfile.mkstemp(prefix='.DS_Store.', dir=os.path.dirname(home))
+    os.close(fd)
+    try:
+        with ds_store.DSStore.open(tmp, 'w+') as d:
+            for e in sorted(entries):
+                d.insert(e)
+        with ds_store.DSStore.open(tmp, 'r') as d:
+            got = sorted((e.filename.lower(), e.code) for e in d)
+            # The library's node split is the broken part — only trust stores
+            # it wrote as a single leaf (a few dozen records fit in 4KB).
+            single_node = d._levels == 0 and d._nodes == 1
+        want = sorted((e.filename.lower(), e.code) for e in entries)
+        if got != want or not single_node:
+            raise RuntimeError('rebuilt .DS_Store failed verification')
+        os.chmod(tmp, 0o644)   # mkstemp creates 0600; Finder writes 0644
+        os.replace(tmp, home)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+existing = read_entries()
+old = {e.code: e for e in existing if e.filename == 'Downloads'}
+# Drop every stale Downloads record; Finder regenerates what it needs.
+keep = [e for e in existing if e.filename != 'Downloads']
+new = downloads_entries(old)
+try:
+    write_store(keep + new)
+except Exception:
+    try:
+        write_store(new)
     except Exception as ex2:
         print("  ⚠️  Downloads sort skipped:", ex2)
 PY
