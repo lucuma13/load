@@ -751,6 +751,8 @@ run_fast() {
   defaults write NSGlobalDomain InitialKeyRepeat -int 15
   defaults write NSGlobalDomain com.apple.trackpad.scaling -float 2.5
   defaults write NSGlobalDomain com.apple.mouse.scaling -float 2
+  defaults write com.apple.AppleMultitouchMouse MouseButtonMode -string TwoButton
+  defaults write com.apple.driver.AppleBluetoothMultitouch.mouse MouseButtonMode -string TwoButton
   defaults write com.apple.AppleMultitouchTrackpad Clicking -bool true
   defaults write com.apple.driver.AppleBluetoothMultitouch.trackpad Clicking -bool true
   defaults -currentHost write NSGlobalDomain com.apple.mouse.tapBehavior -int 1
