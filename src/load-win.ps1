@@ -377,17 +377,8 @@ function Set-PremierePro {
     if (-not (Set-PrefNode -Prefs $prefs -Node "BE.Prefs.AutoSave.DoSave"   -Value "true")) { $missing += "BE.Prefs.AutoSave.DoSave" }
     if (-not (Set-PrefNode -Prefs $prefs -Node "BE.Prefs.AutoSave.Interval" -Value "5")) { $missing += "BE.Prefs.AutoSave.Interval" }
 
-    # Timeline toggles: Linked Selection + Timeline Display Settings (wrench menu).
     # Linked Selection already defaults to the value we want, so a missing node on a
     # fresh install is fine and simply left untouched.
-    #
-    # The preferences below are commented out for now because they are not written to the preference file until the default behaviour has changed:
-    # 'be.Prefs.Timeline.Show.Video.Thumbnails',
-    # 'be.Prefs.Timeline.Show.Video.Names',
-    # 'be.Prefs.Timeline.Show.Audio.Waveforms',
-    # 'be.Prefs.Timeline.Show.Audio.Names',
-    # 'be.Prefs.Timeline.Show.Proxy.Badges',
-    # 'TL.PREFShowFXBadges',
     if (-not (Set-PrefNode -Prefs $prefs -Node "TL.PREFLinkedSelectionState" -Value "true")) { $missing += "TL.PREFLinkedSelectionState" }
 
     # Preferences whose Premiere default is NOT the value we want. A fresh install
@@ -419,6 +410,12 @@ function Set-PremierePro {
         'MZ.Prefs.PlaybackEndReturnToBeginning|false|'                    # At playback end, return to beginning
         'BE.Prefs.AutoSave.MaxProjectVersions|200|'                       # Auto Save: Maximum Project Versions
         'BE.Prefs.MediaIntelligence.AnalyzeImportedMediaForMISO|false|25' # Analyze all imported media
+        'be.Prefs.Timeline.Show.Video.Thumbnails|true|'                   # Timeline Display Settings: Show Video Thumbnails
+        'be.Prefs.Timeline.Show.Video.Names|true|'                        # Timeline Display Settings: Show Video Names
+        'be.Prefs.Timeline.Show.Audio.Waveforms|true|'                    # Timeline Display Settings: Show Audio Waveforms
+        'be.Prefs.Timeline.Show.Audio.Names|true|'                        # Timeline Display Settings: Show Audio Names
+        'be.Prefs.Timeline.Show.Proxy.Badges|true|'                       # Timeline Display Settings: Show Proxy Badges
+        'TL.PREFShowFXBadges|true|'                                       # Timeline Display Settings: Show FX Badges
     )
     $mseForced = @(
         'BE.Prefs.Audio.AutoPeakGeneration|false|'                       # Generate waveforms automatically during import

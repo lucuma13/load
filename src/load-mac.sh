@@ -252,15 +252,6 @@ customise_premiere_pro() {
   set_pref_node "$prefs" "BE.Prefs.AutoSave.DoSave" "true" || missing+=("BE.Prefs.AutoSave.DoSave")
   set_pref_node "$prefs" "BE.Prefs.AutoSave.Interval" "5" || missing+=("BE.Prefs.AutoSave.Interval")
 
-  # Timeline toggles: Link Selection + Display Settings (wrench menu).
-  # The Display Settings nodes below are commented out for now because they are not
-  # written to the preference file until the default behaviour has changed:
-  #   be.Prefs.Timeline.Show.Video.Thumbnails
-  #   be.Prefs.Timeline.Show.Video.Names
-  #   be.Prefs.Timeline.Show.Audio.Waveforms
-  #   be.Prefs.Timeline.Show.Audio.Names
-  #   be.Prefs.Timeline.Show.Proxy.Badges
-  #   TL.PREFShowFXBadges
   # Link Selection already defaults to the value we want, so a missing node on a fresh
   # install is fine and simply left untouched.
   set_pref_node "$prefs" "TL.PREFLinkedSelectionState" "true" || missing+=("TL.PREFLinkedSelectionState")
@@ -294,6 +285,12 @@ customise_premiere_pro() {
     "MZ.Prefs.PlaybackEndReturnToBeginning|false|"                    # At playback end, return to beginning
     "BE.Prefs.AutoSave.MaxProjectVersions|200|"                       # Auto Save: Maximum Project Versions
     "BE.Prefs.MediaIntelligence.AnalyzeImportedMediaForMISO|false|25" # Analyze all imported media
+    "be.Prefs.Timeline.Show.Video.Thumbnails|true|"                   # Timeline Display Settings: Show Video Thumbnails
+    "be.Prefs.Timeline.Show.Video.Names|true|"                        # Timeline Display Settings: Show Video Names
+    "be.Prefs.Timeline.Show.Audio.Waveforms|true|"                    # Timeline Display Settings: Show Audio Waveforms
+    "be.Prefs.Timeline.Show.Audio.Names|true|"                        # Timeline Display Settings: Show Audio Names
+    "be.Prefs.Timeline.Show.Proxy.Badges|true|"                       # Timeline Display Settings: Show Proxy Badges
+    "TL.PREFShowFXBadges|true|"                                       # Timeline Display Settings: Show FX Badges
   )
   local entry node value min_major
   for entry in "${forced[@]}"; do
