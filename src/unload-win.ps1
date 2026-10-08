@@ -5,7 +5,7 @@ Windows workstation cleanup script
 .DESCRIPTION
 It removes custom setup - load-win's work directory, our Premiere Pro
 workspaces, AutoHotkey, claude-code, Mister Horse Product Manager sign-in, and
-the shell history. And it quits Google Chrome.
+the shell history. It empties the Recycle Bin, and it quits Google Chrome.
 
 --dry-run is the only flag, to see the exact list before deleting.
 
@@ -70,6 +70,7 @@ function Show-Usage {
     Write-Host "    - Mister Horse Product Manager: signed out"
     Write-Host "    - Claude Code: signed out, uninstalled, and its local state wiped"
     Write-Host "    - the PowerShell (PSReadLine) command history"
+    Write-Host "    - everything in the Recycle Bin"
     Write-Host ""
     Write-Host "  Quits, leaving the app and its profile in place:"
     Write-Host "    - Google Chrome"
@@ -302,6 +303,16 @@ function Clear-HistoryBuffer {
         return $true
     }
     catch { return $false }
+}
+
+# Get-RecycleBinCount - how many items this account has in the Recycle Bin, or
+# $null when the shell can't be asked (no desktop shell, as over WinRM).
+function Get-RecycleBinCount {
+    try {
+        # 10 is ssfBITBUCKET, the Recycle Bin's shell namespace.
+        return (New-Object -ComObject Shell.Application).NameSpace(10).Items().Count
+    }
+    catch { return $null }
 }
 
 # Test-UnderHome <path> - true only for a path strictly inside $HOME (or
@@ -705,6 +716,25 @@ function Clear-Claude {
     }
 }
 
+# Clear-RecycleBinPhase - empty this account's Recycle Bin, on every drive.
+function Clear-RecycleBinPhase {
+    $count = Get-RecycleBinCount
+    if ($null -eq $count) {
+        Write-Host "  [warn] Could not read the Recycle Bin - empty it by hand"
+        return
+    }
+    $failed = $false
+    if ($count -gt 0 -and -not $DRY_RUN) {
+        Clear-RecycleBin -Force -ErrorAction SilentlyContinue
+        $failed = (Get-RecycleBinCount) -gt 0
+    }
+    Report -Did ($count -gt 0) -Failed:$failed `
+        -DoneMsg "Emptied the Recycle Bin" `
+        -WouldMsg "Would empty the Recycle Bin" `
+        -SkipMsg "Recycle Bin - Nothing to empty" `
+        -FailMsg "The Recycle Bin is not empty - an item may be in use; empty it by hand"
+}
+
 function Clear-ShellHistory {
     # The console you launched this from holds its own commands in memory -
     # including the command that ran this script - in two separate places: the
@@ -760,6 +790,7 @@ try {
     Clear-PremiereWorkspace
     Clear-MisterHorse
     Clear-Claude
+    Clear-RecycleBinPhase
     Clear-ShellHistory
 
     Write-Host ""

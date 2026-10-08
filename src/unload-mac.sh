@@ -3,7 +3,7 @@
 #
 # It removes custom setup — load-mac's work directory, our Premiere Pro
 # workspace templates, the Mister Horse Product Manager sign-in, Claude Code and
-# the shell history. And it quits Google Chrome.
+# the shell history. It empties the Trash, and it quits Google Chrome.
 #
 # Usage — --dry-run is the only option, and reports the very same run instead of
 # performing it, a line per phase either way:
@@ -51,6 +51,7 @@ usage() {
   echo "    - the Mister Horse Product Manager sign-in" >&2
   echo "    - claude-code" >&2
   echo "    - shell history" >&2
+  echo "    - everything in the Trash" >&2
   echo "" >&2
   echo "  Quits (leaving the app and its data in place):" >&2
   echo "    - Google Chrome" >&2
@@ -459,6 +460,28 @@ clean_claude() {
   fi
 }
 
+# clean_trash — empty the Trash.
+clean_trash() {
+  local n
+  if [ ! -d "$HOME/.Trash" ]; then
+    skipped "Trash - nothing to empty"
+    return 0
+  fi
+  if ! n="$(osascript -e 'tell application "Finder" to count items of trash' 2>/dev/null)"; then
+    echo "  ⚠️  Could not ask Finder about the Trash — allow Terminal to control Finder, or empty it by hand"
+    return 0
+  fi
+  if [ "${n:-0}" -eq 0 ]; then
+    skipped "Trash - nothing to empty"
+    return 0
+  fi
+  if ! $DRY_RUN && ! osascript -e 'tell application "Finder" to empty trash' &>/dev/null; then
+    echo "  ⚠️  Could not empty the Trash — an item may be in use; empty it by hand"
+    return 0
+  fi
+  did_it Emptied empty "the Trash"
+}
+
 clean_history() {
   local did=false path
   while IFS= read -r path; do
@@ -491,6 +514,7 @@ main() {
   clean_premiere_workspaces
   clean_misterhorse
   clean_claude
+  clean_trash
   clean_history
 
   echo ""

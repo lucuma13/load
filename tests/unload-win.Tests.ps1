@@ -523,6 +523,31 @@ Describe "Google Chrome" {
     }
 }
 
+Describe "Recycle Bin" {
+    BeforeAll {
+        $script:binBody = [regex]::Match(
+            (Get-Content "$PSScriptRoot/../src/unload-win.ps1" -Raw),
+            '(?s)function Clear-RecycleBinPhase \{.*?\n\}').Value
+    }
+
+    # A dry run must not empty the bin any more than it deletes a file.
+    It "never empties the bin under --dry-run" {
+        $binBody | Should -Not -BeNullOrEmpty -Because "Clear-RecycleBinPhase should be findable"
+        $binBody | Should -Match '-not \$DRY_RUN\) \{\s+Clear-RecycleBin'
+    }
+
+    # Over WinRM there is no desktop shell to ask, and "nothing to empty" would
+    # then be a guess.
+    It "warns rather than skips when the bin can't be read" {
+        $binBody | Should -Match '\$null -eq \$count'
+    }
+
+    It "runs as its own phase in the dispatch block" {
+        $dispatch = [regex]::Match((Get-Content "$PSScriptRoot/../src/unload-win.ps1" -Raw), '(?s)^try \{.*?\n\}', 'Multiline').Value
+        $dispatch | Should -BeLike "*Clear-RecycleBinPhase*"
+    }
+}
+
 Describe "Claude Code target paths" {
     # ~\.claude is the whole point of the Claude target on a machine you're leaving:
     # it holds transcripts, per-project history, memory and the credentials file.

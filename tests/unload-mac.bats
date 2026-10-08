@@ -87,7 +87,7 @@ setup() {
 # before it would go to the network: this stays an offline test. HISTFILE is
 # unset for the same reason - an inherited one would point outside the throwaway
 # HOME and give the history phase real work to do.
-@test "the bare command runs all six cleanup phases" {
+@test "the bare command runs all seven cleanup phases" {
   run env -u HISTFILE HOME="$BATS_TEST_TMPDIR/home" bash "$DIR/../src/unload-mac.sh" --dry-run
   assert_success
   assert_output --partial "Google Chrome"
@@ -95,6 +95,7 @@ setup() {
   assert_output --partial "Premiere Pro workspaces"
   assert_output --partial "Mister Horse"
   assert_output --partial "Claude Code"
+  assert_output --partial "Trash"
   assert_output --partial "Shell history"
 }
 
@@ -123,6 +124,7 @@ setup() {
   assert_success
   assert_line --partial "⏩  Work directory - nothing to remove"
   assert_line --partial "⏩  Premiere Pro workspaces - nothing to remove"
+  assert_line --partial "⏩  Trash - nothing to empty"
   assert_line --partial "⏩  Shell history - nothing to remove"
 }
 
@@ -347,6 +349,28 @@ fake_ps() {
   act="$(echo "$body" | grep -n 'osascript\|kill -9' | head -1 | cut -d: -f1)"
   [ -n "$dry" ] || fail "quit_chrome does not check DRY_RUN"
   [ "$dry" -lt "$act" ] || fail "quit_chrome acts on Chrome before checking DRY_RUN"
+}
+
+# -----------------------------------------------------------------------------
+# Trash
+# -----------------------------------------------------------------------------
+
+# A dry run must not empty the Trash any more than it deletes a file.
+@test "clean_trash under --dry-run counts the Trash but never empties it" {
+  local body dry act
+  body="$(awk '/^clean_trash\(\) \{/{c=1} c{print} c&&/^\}/{exit}' "$DIR/../src/unload-mac.sh")"
+  dry="$(echo "$body" | grep -n 'DRY_RUN' | head -1 | cut -d: -f1)"
+  act="$(echo "$body" | grep -n 'empty trash' | head -1 | cut -d: -f1)"
+  [ -n "$act" ] || fail "clean_trash never empties the Trash"
+  [ "$dry" = "$act" ] || fail "clean_trash empties the Trash without checking DRY_RUN"
+}
+
+# ~/.Trash is behind Full Disk Access, so going at it with rm_path would fail on
+# most terminals; Finder empties it with only the Automation consent.
+@test "clean_trash goes through Finder, not rm_path" {
+  run awk '/^clean_trash\(\) \{/{c=1} c{print} c&&/^\}/{exit}' "$DIR/../src/unload-mac.sh"
+  assert_output --partial 'application "Finder"'
+  refute_output --partial "rm_path"
 }
 
 # -----------------------------------------------------------------------------
